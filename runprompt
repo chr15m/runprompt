@@ -109,7 +109,7 @@ def parse_yaml_value(s):
 def render_template(template, variables):
     def replace(match):
         key = match.group(1).strip()
-        return str(variables.get(key, match.group(0)))
+        return str(variables.get(key, ""))
     return re.sub(r"\{\{([^}]+)\}\}", replace, template)
 
 
