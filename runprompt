@@ -25,6 +25,17 @@ PROVIDERS = {
     },
 }
 
+RED = "\033[31m"
+RESET = "\033[0m"
+TIMEOUT = 120
+
+VERBOSE = False
+
+
+def log(msg):
+    if VERBOSE:
+        print(msg, file=sys.stderr)
+
 
 def parse_prompt_file(path):
     with open(path, "r") as f:
@@ -132,6 +143,22 @@ def build_schema_tool(schema):
     }
 
 
+def extract_error_message(error_body):
+    try:
+        data = json.loads(error_body)
+        if "error" in data:
+            err = data["error"]
+            if isinstance(err, dict) and "message" in err:
+                return err["message"]
+            if isinstance(err, str):
+                return err
+        if "message" in data:
+            return data["message"]
+    except json.JSONDecodeError:
+        pass
+    return error_body
+
+
 def make_request(url, api_key, model, prompt, output_config, provider):
     headers = {
         "Content-Type": "application/json",
@@ -168,20 +195,21 @@ def make_request(url, api_key, model, prompt, output_config, provider):
                 "function": {"name": "extract"}
             }
     data = json.dumps(body).encode("utf-8")
-    print(f"Request URL: {url}", file=sys.stderr)
-    print(f"Request body: {json.dumps(body, indent=2)}", file=sys.stderr)
+    log(f"Request URL: {url}")
+    log(f"Request body: {json.dumps(body, indent=2)}")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
-        print(f"HTTP {e.code}: {error_body}", file=sys.stderr)
+        message = extract_error_message(error_body)
+        print(f"{RED}{message}{RESET}", file=sys.stderr)
         sys.exit(1)
 
 
 def extract_response(response, output_config, provider):
-    print(f"Response: {json.dumps(response, indent=2)}", file=sys.stderr)
+    log(f"Response: {json.dumps(response, indent=2)}")
     if provider == "anthropic":
         content = response.get("content", [])
         for block in content:
@@ -202,10 +230,15 @@ def extract_response(response, output_config, provider):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: runprompt <prompt_file>", file=sys.stderr)
+    global VERBOSE
+    args = sys.argv[1:]
+    if "-v" in args:
+        VERBOSE = True
+        args.remove("-v")
+    if len(args) < 1:
+        print("Usage: runprompt [-v] <prompt_file>", file=sys.stderr)
         sys.exit(1)
-    prompt_path = sys.argv[1]
+    prompt_path = args[0]
     meta, template = parse_prompt_file(prompt_path)
     model_str = meta.get("model", "")
     if not model_str:
@@ -221,9 +254,9 @@ def main():
     if raw_input:
         try:
             variables = json.loads(raw_input)
-            print("Parsed input as JSON", file=sys.stderr)
+            log("Parsed input as JSON")
         except json.JSONDecodeError:
-            print("Input is not JSON, treating as raw string", file=sys.stderr)
+            log("Input is not JSON, treating as raw string")
             input_schema = meta.get("input", {}).get("schema", {})
             if input_schema:
                 first_key = list(input_schema.keys())[0]
@@ -231,7 +264,7 @@ def main():
             else:
                 variables = {"input": raw_input}
     prompt = render_template(template, variables)
-    print(f"Rendered prompt: {prompt}", file=sys.stderr)
+    log(f"Rendered prompt: {prompt}")
     output_config = meta.get("output", {})
     response = make_request(url, api_key, model, prompt, output_config, provider)
     result = extract_response(response, output_config, provider)
