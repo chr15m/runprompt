@@ -235,7 +235,7 @@ def make_request(url, api_key, model, prompt, output_config, provider):
             return json.loads(response_body)
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
-        log("Response: %s" % error_body)
+        log("Error response: %s" % error_body)
         message = extract_error_message(error_body)
         print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
         sys.exit(1)
