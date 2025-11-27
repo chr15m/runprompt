@@ -115,6 +115,8 @@ def render_template(template, variables):
 
 
 def parse_model_string(model_str):
+    if model_str == "test":
+        return "test", None
     parts = model_str.split("/", 1)
     if len(parts) == 1:
         return None, parts[0]
