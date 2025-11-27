@@ -108,10 +108,62 @@ def parse_yaml_value(s):
 
 
 def render_template(template, variables):
-    def replace(match):
-        key = match.group(1).strip()
-        return str(variables.get(key, ""))
-    return re.sub(r"\{\{([^}]+)\}\}", replace, template)
+    def lookup(name, ctx):
+        name = name.strip()
+        if name == ".":
+            return ctx
+        for part in name.split("."):
+            if isinstance(ctx, dict):
+                ctx = ctx.get(part, "")
+            else:
+                return ""
+        return ctx
+
+    def render(tmpl, ctx):
+        # Process sections: {{#key}}...{{/key}}
+        def section_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            if isinstance(val, list):
+                return "".join(render(inner, item) for item in val)
+            if val:
+                new_ctx = val if isinstance(val, dict) else ctx
+                return render(inner, new_ctx)
+            return ""
+
+        # Process inverted sections: {{^key}}...{{/key}}
+        def inverted_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            if not val or (isinstance(val, list) and len(val) == 0):
+                return render(inner, ctx)
+            return ""
+
+        # Process sections first (innermost first via non-greedy)
+        tmpl = re.sub(
+            r"\{\{#(\w+)\}\}(.*?)\{\{/\1\}\}",
+            section_replace,
+            tmpl,
+            flags=re.DOTALL
+        )
+        tmpl = re.sub(
+            r"\{\{\^(\w+)\}\}(.*?)\{\{/\1\}\}",
+            inverted_replace,
+            tmpl,
+            flags=re.DOTALL
+        )
+
+        # Process variables
+        def var_replace(match):
+            key = match.group(1).strip()
+            return str(lookup(key, ctx))
+        tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
+
+        return tmpl
+
+    return render(template, variables)
 
 
 def parse_model_string(model_str):
