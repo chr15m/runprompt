@@ -94,6 +94,21 @@ def test_comments():
     test("comment between variables", "{{a}}{{! middle }}{{b}}", {"a": "X", "b": "Y"}, "XY")
 
 
+def test_loop_variables():
+    print("\n--- Loop variables (@index, @first, @last) ---")
+    test("@index", "{{#items}}{{@index}}{{/items}}", {"items": ["a", "b", "c"]}, "012")
+    test("@index with value", "{{#items}}{{@index}}:{{.}} {{/items}}", 
+         {"items": ["a", "b", "c"]}, "0:a 1:b 2:c ")
+    test("@first", "{{#items}}{{#@first}}first{{/@first}}{{.}}{{/items}}", 
+         {"items": ["a", "b", "c"]}, "firstabc")
+    test("@last", "{{#items}}{{.}}{{#@last}}!{{/@last}}{{/items}}", 
+         {"items": ["a", "b", "c"]}, "abc!")
+    test("@index with objects", "{{#people}}{{@index}}:{{name}} {{/people}}", 
+         {"people": [{"name": "Alice"}, {"name": "Bob"}]}, "0:Alice 1:Bob ")
+    test("@first @last single item", "{{#items}}{{#@first}}F{{/@first}}{{#@last}}L{{/@last}}{{/items}}", 
+         {"items": ["x"]}, "FL")
+
+
 def main():
     test_basic_interpolation()
     test_dot_notation()
@@ -102,6 +117,7 @@ def main():
     test_inverted_sections()
     test_combined()
     test_comments()
+    test_loop_variables()
 
     print("\n" + "=" * 40)
     print("Passed: %d, Failed: %d" % (passed, failed))

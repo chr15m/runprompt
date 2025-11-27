@@ -112,6 +112,9 @@ def render_template(template, variables):
         name = name.strip()
         if name == ".":
             return ctx
+        # Handle @index, @first, @last
+        if name.startswith("@"):
+            return ctx.get(name, "")
         for part in name.split("."):
             if isinstance(ctx, dict):
                 ctx = ctx.get(part, "")
@@ -129,7 +132,18 @@ def render_template(template, variables):
             inner = match.group(2)
             val = lookup(key, ctx)
             if isinstance(val, list):
-                return "".join(render(inner, item) for item in val)
+                result = []
+                for i, item in enumerate(val):
+                    if isinstance(item, dict):
+                        item_ctx = dict(item)
+                    else:
+                        item_ctx = {"_value": item}
+                    item_ctx["@index"] = i
+                    item_ctx["@first"] = (i == 0)
+                    item_ctx["@last"] = (i == len(val) - 1)
+                    item_ctx["."] = item
+                    result.append(render(inner, item_ctx))
+                return "".join(result)
             if val:
                 new_ctx = val if isinstance(val, dict) else ctx
                 return render(inner, new_ctx)
@@ -146,13 +160,13 @@ def render_template(template, variables):
 
         # Process sections first (innermost first via non-greedy)
         tmpl = re.sub(
-            r"\{\{#(\w+)\}\}(.*?)\{\{/\1\}\}",
+            r"\{\{#(@?\w+)\}\}(.*?)\{\{/\1\}\}",
             section_replace,
             tmpl,
             flags=re.DOTALL
         )
         tmpl = re.sub(
-            r"\{\{\^(\w+)\}\}(.*?)\{\{/\1\}\}",
+            r"\{\{\^(@?\w+)\}\}(.*?)\{\{/\1\}\}",
             inverted_replace,
             tmpl,
             flags=re.DOTALL
@@ -161,7 +175,11 @@ def render_template(template, variables):
         # Process variables
         def var_replace(match):
             key = match.group(1).strip()
-            return str(lookup(key, ctx))
+            val = lookup(key, ctx)
+            # Handle special "." lookup for non-dict items in lists
+            if key == "." and "." in ctx:
+                return str(ctx["."])
+            return str(val)
         tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
 
         return tmpl
