@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+import sys
+import os
+import json
+import re
+import urllib.request
+import urllib.error
+
+PROVIDERS = {
+    "openrouter": {
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "env": "OPENROUTER_API_KEY",
+    },
+    "googleai": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "env": "GOOGLE_API_KEY",
+    },
+    "anthropic": {
+        "url": "https://api.anthropic.com/v1/messages",
+        "env": "ANTHROPIC_API_KEY",
+    },
+    "openai": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "env": "OPENAI_API_KEY",
+    },
+}
+
+
+def parse_prompt_file(path):
+    with open(path, "r") as f:
+        content = f.read()
+    if not content.startswith("---"):
+        return {}, content.strip()
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return {}, content.strip()
+    meta_str = parts[1].strip()
+    template = parts[2].strip()
+    meta = parse_yaml(meta_str)
+    return meta, template
+
+
+def parse_yaml(s):
+    result = {}
+    stack = [(result, -1)]
+    for line in s.split("\n"):
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        while stack and indent <= stack[-1][1]:
+            stack.pop()
+        match = re.match(r"^(\s*)([^:]+):\s*(.*)", line)
+        if not match:
+            continue
+        key = match.group(2).strip()
+        value = match.group(3).strip()
+        parent = stack[-1][0]
+        if value:
+            if value.lower() == "true":
+                parent[key] = True
+            elif value.lower() == "false":
+                parent[key] = False
+            elif re.match(r"^-?\d+$", value):
+                parent[key] = int(value)
+            elif re.match(r"^-?\d+\.\d+$", value):
+                parent[key] = float(value)
+            else:
+                parent[key] = value
+        else:
+            parent[key] = {}
+            stack.append((parent[key], indent))
+    return result
+
+
+def render_template(template, variables):
+    def replace(match):
+        key = match.group(1).strip()
+        return str(variables.get(key, match.group(0)))
+    return re.sub(r"\{\{([^}]+)\}\}", replace, template)
+
+
+def parse_model_string(model_str):
+    parts = model_str.split("/", 1)
+    if len(parts) == 1:
+        return None, parts[0]
+    return parts[0], parts[1]
+
+
+def get_provider_config(provider):
+    if provider not in PROVIDERS:
+        print(f"Unknown provider: {provider}", file=sys.stderr)
+        sys.exit(1)
+    config = PROVIDERS[provider]
+    api_key = os.environ.get(config["env"])
+    if not api_key:
+        print(f"Missing API key: {config['env']}", file=sys.stderr)
+        sys.exit(1)
+    return config["url"], api_key
+
+
+def build_schema_tool(schema):
+    properties = {}
+    required = []
+    for key, value in schema.items():
+        clean_key = key.rstrip("?")
+        is_optional = key.endswith("?")
+        parts = value.split(",", 1) if isinstance(value, str) else [value]
+        type_str = parts[0].strip() if parts else "string"
+        description = parts[1].strip() if len(parts) > 1 else ""
+        json_type = "string"
+        if type_str == "number":
+            json_type = "number"
+        elif type_str == "boolean":
+            json_type = "boolean"
+        prop = {"type": json_type}
+        if description:
+            prop["description"] = description
+        properties[clean_key] = prop
+        if not is_optional:
+            required.append(clean_key)
+    return {
+        "type": "function",
+        "function": {
+            "name": "extract",
+            "description": "Extract structured data",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+def make_request(url, api_key, model, prompt, output_config, provider):
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if provider == "anthropic":
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if provider == "anthropic":
+        body = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if output_config and output_config.get("schema"):
+            tool = build_schema_tool(output_config["schema"])
+            body["tools"] = [{
+                "name": tool["function"]["name"],
+                "description": tool["function"]["description"],
+                "input_schema": tool["function"]["parameters"],
+            }]
+            body["tool_choice"] = {"type": "tool", "name": "extract"}
+    else:
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if output_config and output_config.get("schema"):
+            tool = build_schema_tool(output_config["schema"])
+            body["tools"] = [tool]
+            body["tool_choice"] = {
+                "type": "function",
+                "function": {"name": "extract"}
+            }
+    data = json.dumps(body).encode("utf-8")
+    print(f"Request URL: {url}", file=sys.stderr)
+    print(f"Request body: {json.dumps(body, indent=2)}", file=sys.stderr)
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        print(f"HTTP {e.code}: {error_body}", file=sys.stderr)
+        sys.exit(1)
+
+
+def extract_response(response, output_config, provider):
+    print(f"Response: {json.dumps(response, indent=2)}", file=sys.stderr)
+    if provider == "anthropic":
+        content = response.get("content", [])
+        for block in content:
+            if block.get("type") == "tool_use":
+                return json.dumps(block.get("input", {}), indent=2)
+            if block.get("type") == "text":
+                return block.get("text", "")
+        return ""
+    else:
+        choices = response.get("choices", [])
+        if not choices:
+            return ""
+        message = choices[0].get("message", {})
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            return tool_calls[0].get("function", {}).get("arguments", "{}")
+        return message.get("content", "")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: runprompt <prompt_file>", file=sys.stderr)
+        sys.exit(1)
+    prompt_path = sys.argv[1]
+    meta, template = parse_prompt_file(prompt_path)
+    model_str = meta.get("model", "")
+    if not model_str:
+        print("No model specified in prompt file", file=sys.stderr)
+        sys.exit(1)
+    provider, model = parse_model_string(model_str)
+    if not provider:
+        print("No provider in model string", file=sys.stderr)
+        sys.exit(1)
+    url, api_key = get_provider_config(provider)
+    raw_input = sys.stdin.read().strip()
+    variables = {}
+    if raw_input:
+        try:
+            variables = json.loads(raw_input)
+            print("Parsed input as JSON", file=sys.stderr)
+        except json.JSONDecodeError:
+            print("Input is not JSON, treating as raw string", file=sys.stderr)
+            input_schema = meta.get("input", {}).get("schema", {})
+            if input_schema:
+                first_key = list(input_schema.keys())[0]
+                variables = {first_key: raw_input}
+            else:
+                variables = {"input": raw_input}
+    prompt = render_template(template, variables)
+    print(f"Rendered prompt: {prompt}", file=sys.stderr)
+    output_config = meta.get("output", {})
+    response = make_request(url, api_key, model, prompt, output_config, provider)
+    result = extract_response(response, output_config, provider)
+    print(result)
+
+
+if __name__ == "__main__":
+    main()
