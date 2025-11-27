@@ -83,6 +83,29 @@ def parse_yaml(s):
     return result
 
 
+def parse_yaml_value(s):
+    s = s.strip()
+    if not s:
+        return None
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+    if re.match(r"^-?\d+$", s):
+        return int(s)
+    if re.match(r"^-?\d+\.\d+$", s):
+        return float(s)
+    if "\n" in s or s.startswith("{"):
+        try:
+            return json.loads(s)
+        except ValueError:
+            pass
+        parsed = parse_yaml(s)
+        if parsed:
+            return parsed
+    return s
+
+
 def render_template(template, variables):
     def replace(match):
         key = match.group(1).strip()
@@ -148,8 +171,15 @@ def extract_error_message(error_body):
         data = json.loads(error_body)
         if "error" in data:
             err = data["error"]
-            if isinstance(err, dict) and "message" in err:
-                return err["message"]
+            if isinstance(err, dict):
+                err_type = err.get("type", "")
+                message = err.get("message", "")
+                if err_type and message:
+                    return "%s: %s" % (err_type, message)
+                if message:
+                    return message
+                if err_type:
+                    return err_type
             if isinstance(err, str):
                 return err
         if "message" in data:
@@ -200,16 +230,18 @@ def make_request(url, api_key, model, prompt, output_config, provider):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            response_body = resp.read().decode("utf-8")
+            log("Response: %s" % response_body)
+            return json.loads(response_body)
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
+        log("Response: %s" % error_body)
         message = extract_error_message(error_body)
         print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
         sys.exit(1)
 
 
 def extract_response(response, output_config, provider):
-    log("Response: %s" % json.dumps(response, indent=2))
     if provider == "anthropic":
         content = response.get("content", [])
         for block in content:
@@ -229,17 +261,57 @@ def extract_response(response, output_config, provider):
         return message.get("content", "")
 
 
+def apply_overrides(meta):
+    for env_key, env_value in os.environ.items():
+        if env_key.startswith("RUNPROMPT_"):
+            key = env_key[10:].lower()
+            parsed = parse_yaml_value(env_value)
+            if parsed is not None:
+                log("Override from env %s: %s" % (env_key, parsed))
+                meta[key] = parsed
+    return meta
+
+
+def parse_args(args):
+    verbose = False
+    overrides = {}
+    remaining = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-v":
+            verbose = True
+        elif arg.startswith("--"):
+            if "=" in arg:
+                key, value = arg[2:].split("=", 1)
+                overrides[key] = parse_yaml_value(value)
+            else:
+                key = arg[2:]
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    i += 1
+                    overrides[key] = parse_yaml_value(args[i])
+                else:
+                    overrides[key] = True
+        else:
+            remaining.append(arg)
+        i += 1
+    return verbose, overrides, remaining
+
+
 def main():
     global VERBOSE
-    args = sys.argv[1:]
-    if "-v" in args:
-        VERBOSE = True
-        args.remove("-v")
-    if len(args) < 1:
-        print("Usage: runprompt [-v] <prompt_file>", file=sys.stderr)
+    verbose, arg_overrides, remaining = parse_args(sys.argv[1:])
+    VERBOSE = verbose
+    if len(remaining) < 1:
+        print("Usage: runprompt [-v] [--key=value ...] <prompt_file>",
+              file=sys.stderr)
         sys.exit(1)
-    prompt_path = args[0]
+    prompt_path = remaining[0]
     meta, template = parse_prompt_file(prompt_path)
+    meta = apply_overrides(meta)
+    for key, value in arg_overrides.items():
+        log("Override from arg --%s: %s" % (key, value))
+        meta[key] = value
     model_str = meta.get("model", "")
     if not model_str:
         print("No model specified in prompt file", file=sys.stderr)
