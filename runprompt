@@ -99,12 +99,12 @@ def parse_model_string(model_str):
 
 def get_provider_config(provider):
     if provider not in PROVIDERS:
-        print(f"Unknown provider: {provider}", file=sys.stderr)
+        print("Unknown provider: %s" % provider, file=sys.stderr)
         sys.exit(1)
     config = PROVIDERS[provider]
     api_key = os.environ.get(config["env"])
     if not api_key:
-        print(f"Missing API key: {config['env']}", file=sys.stderr)
+        print("Missing API key: %s" % config["env"], file=sys.stderr)
         sys.exit(1)
     return config["url"], api_key
 
@@ -154,7 +154,7 @@ def extract_error_message(error_body):
                 return err
         if "message" in data:
             return data["message"]
-    except json.JSONDecodeError:
+    except ValueError:
         pass
     return error_body
 
@@ -167,7 +167,7 @@ def make_request(url, api_key, model, prompt, output_config, provider):
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
     else:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers["Authorization"] = "Bearer %s" % api_key
     if provider == "anthropic":
         body = {
             "model": model,
@@ -195,8 +195,8 @@ def make_request(url, api_key, model, prompt, output_config, provider):
                 "function": {"name": "extract"}
             }
     data = json.dumps(body).encode("utf-8")
-    log(f"Request URL: {url}")
-    log(f"Request body: {json.dumps(body, indent=2)}")
+    log("Request URL: %s" % url)
+    log("Request body: %s" % json.dumps(body, indent=2))
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
@@ -204,12 +204,12 @@ def make_request(url, api_key, model, prompt, output_config, provider):
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         message = extract_error_message(error_body)
-        print(f"{RED}{message}{RESET}", file=sys.stderr)
+        print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
         sys.exit(1)
 
 
 def extract_response(response, output_config, provider):
-    log(f"Response: {json.dumps(response, indent=2)}")
+    log("Response: %s" % json.dumps(response, indent=2))
     if provider == "anthropic":
         content = response.get("content", [])
         for block in content:
@@ -255,7 +255,7 @@ def main():
         try:
             variables = json.loads(raw_input)
             log("Parsed input as JSON")
-        except json.JSONDecodeError:
+        except ValueError:
             log("Input is not JSON, treating as raw string")
             input_schema = meta.get("input", {}).get("schema", {})
             if input_schema:
@@ -264,7 +264,7 @@ def main():
             else:
                 variables = {"input": raw_input}
     prompt = render_template(template, variables)
-    log(f"Rendered prompt: {prompt}")
+    log("Rendered prompt: %s" % prompt)
     output_config = meta.get("output", {})
     response = make_request(url, api_key, model, prompt, output_config, provider)
     result = extract_response(response, output_config, provider)
