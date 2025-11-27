@@ -1,0 +1,6 @@
+---
+model: openrouter/google/gemini-2.5-pro
+---
+Summarize the following text in one sentence:
+
+{{STDIN}}
