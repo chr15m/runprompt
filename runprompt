@@ -32,6 +32,36 @@ TIMEOUT = 120
 VERBOSE = False
 PROMPT_PATH = None
 
+HELP_TEXT = """\
+Usage: runprompt [options] <prompt_file>
+
+Run Dotprompt (.prompt) files from the command line.
+
+Options:
+  -h, --help              Show this help message and exit
+  -v, --verbose           Show request/response details
+  --save-response <file>  Save raw API response to file
+  --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
+  --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
+
+Input:
+  Pipe JSON to set template variables: echo '{"name": "World"}' | runprompt hello.prompt
+  Pipe text for {{STDIN}} variable:    echo "some text" | runprompt summarize.prompt
+
+Environment:
+  ANTHROPIC_API_KEY       API key for Anthropic models
+  OPENAI_API_KEY          API key for OpenAI models
+  GOOGLE_API_KEY          API key for Google AI models
+  OPENROUTER_API_KEY      API key for OpenRouter models
+  RUNPROMPT_<KEY>         Override frontmatter (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
+
+Examples:
+  runprompt hello.prompt
+  echo '{"name": "World"}' | runprompt hello.prompt
+  runprompt --model openai/gpt-4o hello.prompt
+  runprompt -v --save-response out.json hello.prompt
+"""
+
 
 def log(msg):
     if VERBOSE:
@@ -427,7 +457,10 @@ def parse_args(args):
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "-v" or arg == "--verbose":
+        if arg == "-h" or arg == "--help":
+            print(HELP_TEXT)
+            sys.exit(0)
+        elif arg == "-v" or arg == "--verbose":
             verbose = True
         elif arg == "--save-response":
             if i + 1 < len(args):
@@ -467,9 +500,8 @@ def main():
         sys.argv[1:])
     VERBOSE = verbose
     if len(remaining) < 1:
-        print("Usage: runprompt [-v] [--save-response <file>] "
-              "[--key=value ...] <prompt_file>",
-              file=sys.stderr)
+        print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
+        print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
     prompt_path = remaining[0]
     PROMPT_PATH = prompt_path
