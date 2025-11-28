@@ -1,0 +1,11 @@
+{
+  "_provider": "openai",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Hello there!"
+      }
+    }
+  ]
+}

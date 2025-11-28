@@ -24,6 +24,8 @@ run_test "stdin-test.prompt" bash -c 'echo "The quick brown fox jumps over the l
 
 run_test "self.prompt" ./runprompt --model test tests/self.prompt
 
+run_test "shebang.prompt" bash -c 'echo '"'"'{"name": "World"}'"'"' | ./runprompt --model test tests/shebang.prompt'
+
 echo ""
 echo "Passed: $pass, Failed: $fail"
 

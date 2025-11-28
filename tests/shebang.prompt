@@ -1,0 +1,4 @@
+#!/usr/bin/env ./runprompt
+model: test
+---
+Hello {{name}}!
