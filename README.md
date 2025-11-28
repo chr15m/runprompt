@@ -1,8 +1,8 @@
 # runprompt
 
-A single-file Python script for running [.prompt files](https://github.com/google/dotprompt).
+A single-file Python script for running [Dotprompt](https://google.github.io/dotprompt/) files.
 
-[Quick start](#quick-start) | [Examples](#examples) | [Configuration](#configuration) | [Providers](#providers)
+[Quick start](#quick-start) | [dotprompt](#what-is-dotprompt) | [Examples](#examples) | [Configuration](#configuration) | [Providers](#providers) | [Spec compliance](#spec-compliance)
 
 ## Quick start
 
@@ -28,6 +28,12 @@ echo '{"name": "World"}' | ./runprompt hello.prompt
 ```
 
 (You can get an OpenAI key from here: <https://platform.openai.com/api-keys>)
+
+## What is Dotprompt?
+
+[Dotprompt](https://google.github.io/dotprompt/) is an executable prompt template format for GenAI. A `.prompt` file contains both the prompt template and metadata (model, schema, config) in a single file.
+
+`runprompt` is a minimal, single-file Python implementation with no dependencies.
 
 ## Examples
 
@@ -73,7 +79,7 @@ echo "John is a 30 year old teacher" | ./runprompt extract.prompt
 # {"name": "John", "age": 30, "occupation": "teacher"}
 ```
 
-Fields ending with `?` are optional. The format is `field: type, description`.
+Schema uses [Picoschema](https://google.github.io/dotprompt/reference/picoschema/) format. Fields ending with `?` are optional. The format is `field: type, description`.
 
 ### Chaining prompts
 
@@ -93,6 +99,16 @@ Override any frontmatter value from the command line:
 ./runprompt --model anthropic/claude-haiku-4-20250514 hello.prompt
 ./runprompt --name "Alice" hello.prompt
 ```
+
+## Template syntax
+
+Templates use [Handlebars syntax](https://google.github.io/dotprompt/reference/template/). Supported features:
+
+- Variable interpolation: `{{variableName}}`, `{{object.property}}`
+- Comments: `{{! this is a comment }}`
+- Iteration: `{{#each items}}...{{/each}}` with `@index`, `@first`, `@last`, `@key`
+- Sections: `{{#key}}...{{/key}}` (renders if truthy)
+- Inverted sections: `{{^key}}...{{/key}}` (renders if falsy)
 
 ## Configuration
 
@@ -138,3 +154,16 @@ Models are specified as `provider/model-name`:
 | OpenRouter | `openrouter/anthropic/claude-sonnet-4-20250514` | [Get key](https://openrouter.ai/settings/keys) |
 
 [OpenRouter](https://openrouter.ai) provides access to models from many providers (Anthropic, Google, Meta, etc.) through a single API key.
+
+## Spec compliance
+
+This is a minimal implementation of the [Dotprompt specification](https://google.github.io/dotprompt/). Not yet supported:
+
+- Multi-message prompts (`{{role}}`, `{{history}}`)
+- Conditionals (`{{#if}}`, `{{#unless}}`, `{{else}}`)
+- Helpers (`{{json}}`, `{{media}}`, `{{section}}`)
+- Model config (`temperature`, `maxOutputTokens`, etc.)
+- Partials (`{{>partialName}}`)
+- Nested Picoschema (objects, arrays of objects, enums)
+
+See [TODO.md](TODO.md) for the full roadmap.
