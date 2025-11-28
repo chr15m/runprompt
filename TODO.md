@@ -92,6 +92,7 @@ Comparison of `runprompt` against the [Dotprompt specification](https://github.c
 
 ## Out of Scope (for now)
 
+- Input validation (spec says schema "allows for" validation, doesn't mandate it)
 - Document context (`context` array)
 - Multiple candidates
 - Custom helper registration API
