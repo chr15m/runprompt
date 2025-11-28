@@ -41,15 +41,27 @@ def log(msg):
 def parse_prompt_file(path):
     with open(path, "r") as f:
         content = f.read()
-    if not content.startswith("---"):
+    # Skip shebang line if present
+    if content.startswith("#!"):
+        content = content.split("\n", 1)[1] if "\n" in content else ""
+    # Handle ---frontmatter---template format
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            meta_str = parts[1].strip()
+            template = parts[2].strip()
+            meta = parse_yaml(meta_str)
+            return meta, template
         return {}, content.strip()
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        return {}, content.strip()
-    meta_str = parts[1].strip()
-    template = parts[2].strip()
-    meta = parse_yaml(meta_str)
-    return meta, template
+    # Handle frontmatter---template format (no opening ---)
+    if "---" in content:
+        parts = content.split("---", 1)
+        meta_str = parts[0].strip()
+        template = parts[1].strip()
+        meta = parse_yaml(meta_str)
+        return meta, template
+    # No frontmatter delimiter found
+    return {}, content.strip()
 
 
 def parse_yaml(s):
