@@ -91,6 +91,24 @@ echo "John is 30" | ./runprompt extract.prompt | ./runprompt generate-bio.prompt
 
 The JSON output from the first prompt becomes template variables in the second.
 
+### Executable prompt files
+
+Make `.prompt` files directly executable with a shebang:
+
+```handlebars
+#!/usr/bin/env runprompt
+model: anthropic/claude-sonnet-4-20250514
+---
+Hello, I'm {{name}}!
+```
+
+```bash
+chmod +x hello.prompt
+echo '{"name": "World"}' | ./hello.prompt
+```
+
+Note: `runprompt` must be in your PATH, or use a relative/absolute path in the shebang (e.g. `#!/usr/bin/env ./runprompt`).
+
 ### CLI overrides
 
 Override any frontmatter value from the command line:
