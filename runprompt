@@ -41,6 +41,8 @@ Options:
   -h, --help              Show this help message and exit
   -v, --verbose           Show request/response details
   --save-response <file>  Save raw API response to file
+  --base-url <url>        Use custom OpenAI-compatible endpoint
+  --openai-base-url <url> Use custom OpenAI-compatible endpoint
   --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
   --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
 
@@ -53,6 +55,8 @@ Environment:
   OPENAI_API_KEY          API key for OpenAI models
   GOOGLE_API_KEY          API key for Google AI models
   OPENROUTER_API_KEY      API key for OpenRouter models
+  OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
+  BASE_URL                Custom OpenAI-compatible endpoint URL (fallback)
   RUNPROMPT_<KEY>         Override frontmatter (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
 
 Examples:
@@ -60,6 +64,7 @@ Examples:
   echo '{"name": "World"}' | runprompt hello.prompt
   runprompt --model openai/gpt-4o hello.prompt
   runprompt -v --save-response out.json hello.prompt
+  OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
 """
 
 
@@ -278,7 +283,16 @@ def parse_model_string(model_str):
     return parts[0], parts[1]
 
 
-def get_provider_config(provider):
+def get_base_url():
+    return os.environ.get("OPENAI_BASE_URL") or os.environ.get("BASE_URL")
+
+
+def get_provider_config(provider, base_url=None):
+    if base_url:
+        url = base_url.rstrip("/") + "/chat/completions"
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        log("Using custom base URL: %s" % url)
+        return url, api_key
     if provider not in PROVIDERS:
         print("Unknown provider: %s" % provider, file=sys.stderr)
         sys.exit(1)
@@ -452,6 +466,7 @@ def apply_overrides(meta):
 def parse_args(args):
     verbose = False
     save_response_path = None
+    base_url = None
     overrides = {}
     remaining = []
     i = 0
@@ -471,6 +486,17 @@ def parse_args(args):
                 sys.exit(1)
         elif arg.startswith("--save-response="):
             save_response_path = arg[len("--save-response="):]
+        elif arg == "--base-url" or arg == "--openai-base-url":
+            if i + 1 < len(args):
+                i += 1
+                base_url = args[i]
+            else:
+                print("%s requires a URL" % arg, file=sys.stderr)
+                sys.exit(1)
+        elif arg.startswith("--base-url="):
+            base_url = arg[len("--base-url="):]
+        elif arg.startswith("--openai-base-url="):
+            base_url = arg[len("--openai-base-url="):]
         elif arg.startswith("--"):
             if "=" in arg:
                 key, value = arg[2:].split("=", 1)
@@ -485,7 +511,7 @@ def parse_args(args):
         else:
             remaining.append(arg)
         i += 1
-    return verbose, save_response_path, overrides, remaining
+    return verbose, save_response_path, base_url, overrides, remaining
 
 
 def read_stdin():
@@ -496,8 +522,8 @@ def read_stdin():
 
 def main():
     global VERBOSE, PROMPT_PATH
-    verbose, save_response_path, arg_overrides, remaining = parse_args(
-        sys.argv[1:])
+    verbose, save_response_path, arg_base_url, arg_overrides, remaining = \
+        parse_args(sys.argv[1:])
     VERBOSE = verbose
     if len(remaining) < 1:
         print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
@@ -541,12 +567,18 @@ def main():
         test_provider = response.get("_provider", "openai")
         result = extract_response(response, output_config, test_provider)
     else:
-        url, api_key = get_provider_config(provider)
+        base_url = arg_base_url or get_base_url()
+        if base_url:
+            url, api_key = get_provider_config(provider, base_url)
+            effective_provider = "openai"
+        else:
+            url, api_key = get_provider_config(provider)
+            effective_provider = provider
         response = make_request(url, api_key, model, prompt, output_config,
-                                provider)
+                                effective_provider)
         if save_response_path:
-            save_response(response, provider, save_response_path)
-        result = extract_response(response, output_config, provider)
+            save_response(response, effective_provider, save_response_path)
+        result = extract_response(response, output_config, effective_provider)
     print(result)
 
 

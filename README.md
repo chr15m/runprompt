@@ -147,6 +147,21 @@ export GOOGLE_API_KEY="..."     # https://aistudio.google.com/app/apikey
 export OPENROUTER_API_KEY="..." # https://openrouter.ai/settings/keys
 ```
 
+### Custom endpoint (Ollama, etc.)
+
+Use `OPENAI_BASE_URL` or `BASE_URL` to point at any OpenAI-compatible endpoint:
+
+```bash
+# Use Ollama
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+./runprompt hello.prompt
+
+# Or via CLI flag
+./runprompt --base-url http://localhost:11434/v1 hello.prompt
+```
+
+When a custom base URL is set, the provider prefix in the model string is ignored and the OpenAI-compatible API format is used.
+
 ### RUNPROMPT_* overrides
 
 Override any frontmatter value via environment variables prefixed with `RUNPROMPT_`:
