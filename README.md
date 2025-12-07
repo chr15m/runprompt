@@ -4,7 +4,7 @@ A single-file Python script for running [Dotprompt](https://google.github.io/dot
 
 [Dotprompt](https://google.github.io/dotprompt/) is an prompt template format for LLMs where a `.prompt` file contains the prompt and metadata (model, schema, config) in a single file.
 
-[Quick start](#quick-start) | [Examples](#examples) | [Configuration](#configuration) | [Providers](#providers) | [Caching](#caching) | [Spec compliance](#spec-compliance)
+[Quick start](#quick-start) | [Examples](#examples) | [Tools](#tools) | [Configuration](#configuration) | [Providers](#providers) | [Caching](#caching) | [Spec compliance](#spec-compliance)
 
 ## Quick start
 
@@ -119,6 +119,110 @@ Note: CLI overrides set frontmatter values (model, config, output format, etc.),
 ```bash
 echo '{"name": "Alice"}' | ./runprompt hello.prompt
 ```
+
+## Tools
+
+Tools allow the LLM to call Python functions during prompt execution. Define tools as Python functions with docstrings, and the LLM can use them to perform actions like reading files, making API calls, or interacting with the system.
+
+### Defining tools
+
+Create a Python file with functions. Any function with a docstring becomes a tool:
+
+```python
+# my_tools.py
+def get_weather(city: str):
+    """Gets the current weather for a city.
+    
+    Returns the temperature and conditions for the specified location.
+    """
+    # Your implementation here
+    return {"temp": 72, "conditions": "sunny"}
+
+def calculate(expression: str):
+    """Evaluates a mathematical expression.
+    
+    Use this for arithmetic calculations.
+    """
+    return eval(expression)
+```
+
+### Using tools in prompts
+
+Reference tools in the frontmatter using Python import syntax:
+
+```handlebars
+---
+model: anthropic/claude-sonnet-4-20250514
+tools:
+  - my_tools.*
+---
+What's the weather in Tokyo and what's 15% of 847?
+```
+
+Tool specifications:
+
+- `module.*` - Import all functions with docstrings from `module.py`
+- `module.function_name` - Import a specific function
+
+### Running prompts with tools
+
+When the LLM wants to call a tool, you'll be prompted to confirm:
+
+```
+$ ./runprompt weather.prompt
+
+I'll check the weather for you.
+
+Tool call: get_weather
+Arguments: {"city": "Tokyo"}
+
+Run this tool? [y/n]: y
+
+The weather in Tokyo is currently 72°F and sunny.
+```
+
+### Tool import paths
+
+Tools are searched for in:
+
+1. The current working directory
+2. The directory containing the prompt file
+3. Additional paths via `--tool-path`
+
+```bash
+./runprompt --tool-path ./my_tools --tool-path /shared/tools prompt.prompt
+```
+
+### Type hints
+
+Type hints on function parameters map to JSON Schema types:
+
+| Python | JSON Schema |
+|--------|-------------|
+| `str`  | `string`    |
+| `int`  | `integer`   |
+| `float`| `number`    |
+| `bool` | `boolean`   |
+| `list` | `array`     |
+| `dict` | `object`    |
+
+Parameters without type hints default to `string`.
+
+### Error handling
+
+If a tool raises an exception, the error is sent back to the LLM which can decide how to proceed:
+
+```
+Tool call: read_file
+Arguments: {"path": "missing.txt"}
+
+Run this tool? [y/n]: y
+FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'
+
+I couldn't read that file because it doesn't exist. Would you like me to try a different path?
+```
+
+See [SPEC-tools.md](SPEC-tools.md) for the full tool calling specification.
 
 ## Template syntax
 

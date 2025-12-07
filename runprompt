@@ -6,6 +6,8 @@ import re
 import hashlib
 import urllib.request
 import urllib.error
+import importlib.util
+import inspect
 
 PROVIDERS = {
     "openrouter": {
@@ -46,6 +48,7 @@ Options:
   --save-response <file>  Save raw API response to file
   --base-url <url>        Use custom OpenAI-compatible endpoint
   --openai-base-url <url> Use custom OpenAI-compatible endpoint
+  --tool-path <path>      Add directory to tool import path (can be repeated)
   --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
   --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
 
@@ -159,10 +162,25 @@ def parse_prompt_file(path):
 def parse_yaml(s):
     result = {}
     stack = [(result, -1)]
+    current_list_key = None
+    current_list = None
+    current_list_indent = -1
     for line in s.split("\n"):
         if not line.strip() or line.strip().startswith("#"):
             continue
         indent = len(line) - len(line.lstrip())
+        # Check if this is a list item
+        list_match = re.match(r"^(\s*)-\s*(.*)", line)
+        if list_match:
+            item_value = list_match.group(2).strip()
+            if current_list is not None and indent > current_list_indent:
+                current_list.append(item_value)
+                continue
+        # Not a list item or different context - reset list tracking
+        if current_list is not None and indent <= current_list_indent:
+            current_list = None
+            current_list_key = None
+            current_list_indent = -1
         while stack and indent <= stack[-1][1]:
             stack.pop()
         match = re.match(r"^(\s*)([^:]+):\s*(.*)", line)
@@ -185,6 +203,23 @@ def parse_yaml(s):
         else:
             parent[key] = {}
             stack.append((parent[key], indent))
+            # Check if next lines are list items
+            current_list_key = key
+            current_list = []
+            parent[key] = current_list
+            current_list_indent = indent
+    # Convert empty lists back to empty dicts
+    def fix_empty_lists(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, list) and len(v) == 0:
+                    obj[k] = {}
+                else:
+                    fix_empty_lists(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                fix_empty_lists(item)
+    fix_empty_lists(result)
     return result
 
 
@@ -395,6 +430,183 @@ def build_schema_tool(schema):
     }
 
 
+def python_type_to_json_type(py_type):
+    if py_type is None:
+        return "string"
+    type_name = getattr(py_type, "__name__", str(py_type))
+    mapping = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "list": "array",
+        "dict": "object",
+    }
+    return mapping.get(type_name, "string")
+
+
+def function_to_tool_schema(func):
+    doc = inspect.getdoc(func)
+    if not doc:
+        return None
+    sig = inspect.signature(func)
+    properties = {}
+    required = []
+    for param_name, param in sig.parameters.items():
+        if param_name in ("self", "cls"):
+            continue
+        param_type = param.annotation
+        if param_type is inspect.Parameter.empty:
+            param_type = None
+        json_type = python_type_to_json_type(param_type)
+        properties[param_name] = {"type": json_type}
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
+    return {
+        "type": "function",
+        "function": {
+            "name": func.__name__,
+            "description": doc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+def load_module_from_path(module_name, search_paths):
+    for base_path in search_paths:
+        # Try as a direct file
+        file_path = os.path.join(base_path, module_name + ".py")
+        if os.path.exists(file_path):
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+        # Try as a package path (e.g., package.submodule -> package/submodule.py)
+        parts = module_name.split(".")
+        if len(parts) > 1:
+            file_path = os.path.join(base_path, *parts[:-1], parts[-1] + ".py")
+            if os.path.exists(file_path):
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                return module
+            # Also try package/submodule/__init__.py style
+            file_path = os.path.join(base_path, *parts, "__init__.py")
+            if os.path.exists(file_path):
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                return module
+    return None
+
+
+def load_tools(tool_specs, search_paths):
+    tools = {}  # name -> {"schema": ..., "func": ...}
+    for spec in tool_specs:
+        if spec.endswith(".*"):
+            # Import all functions from module
+            module_name = spec[:-2]
+            try:
+                module = load_module_from_path(module_name, search_paths)
+                if module is None:
+                    raise ImportError("No module named '%s'" % module_name)
+                for name in dir(module):
+                    if name.startswith("_"):
+                        continue
+                    obj = getattr(module, name)
+                    if callable(obj) and inspect.getdoc(obj):
+                        schema = function_to_tool_schema(obj)
+                        if schema:
+                            tools[name] = {"schema": schema, "func": obj}
+                            log("Loaded tool: %s from %s" % (name, module_name))
+            except Exception as e:
+                print("Warning: Could not import tool '%s': %s" % (spec, e),
+                      file=sys.stderr)
+        else:
+            # Import specific function
+            parts = spec.rsplit(".", 1)
+            if len(parts) != 2:
+                print("Warning: Invalid tool spec '%s'" % spec, file=sys.stderr)
+                continue
+            module_name, func_name = parts
+            try:
+                module = load_module_from_path(module_name, search_paths)
+                if module is None:
+                    raise ImportError("No module named '%s'" % module_name)
+                if not hasattr(module, func_name):
+                    raise AttributeError("Module '%s' has no function '%s'" %
+                                         (module_name, func_name))
+                func = getattr(module, func_name)
+                if not callable(func):
+                    raise TypeError("'%s' is not callable" % func_name)
+                schema = function_to_tool_schema(func)
+                if schema:
+                    tools[func_name] = {"schema": schema, "func": func}
+                    log("Loaded tool: %s from %s" % (func_name, module_name))
+                else:
+                    print("Warning: Function '%s' has no docstring" % func_name,
+                          file=sys.stderr)
+            except Exception as e:
+                print("Warning: Could not import tool '%s': %s" % (spec, e),
+                      file=sys.stderr)
+    return tools
+
+
+def truncate_value(value, max_len=200):
+    s = str(value)
+    if len(s) <= max_len:
+        return s
+    head = 80
+    tail = 80
+    middle = len(s) - head - tail
+    return "%s...%d additional characters...%s" % (s[:head], middle, s[-tail:])
+
+
+def truncate_args_for_display(args):
+    if isinstance(args, dict):
+        result = {}
+        for k, v in args.items():
+            if isinstance(v, str):
+                result[k] = truncate_value(v)
+            else:
+                result[k] = v
+        return result
+    return args
+
+
+def prompt_user_for_tool(tool_name, args):
+    display_args = truncate_args_for_display(args)
+    print("\nTool call: %s" % tool_name, file=sys.stderr)
+    print("Arguments: %s" % json.dumps(display_args, indent=2), file=sys.stderr)
+    print("", file=sys.stderr)
+    while True:
+        try:
+            response = input("Run this tool? [y/n]: ")
+        except EOFError:
+            return False
+        if response.lower() in ("y", "yes"):
+            return True
+        if response.lower() in ("n", "no"):
+            return False
+        print("Please enter 'y' or 'n'", file=sys.stderr)
+
+
+def execute_tool(tool_func, args):
+    try:
+        result = tool_func(**args)
+        return result, None
+    except Exception as e:
+        error_msg = "%s: %s" % (type(e).__name__, str(e))
+        return None, error_msg
+
+
 def extract_error_message(error_body):
     try:
         data = json.loads(error_body)
@@ -437,7 +649,7 @@ def save_response(response, provider, save_path):
     log("Saved response to: %s" % save_path)
 
 
-def make_request(url, api_key, model, prompt, output_config, provider):
+def make_request(url, api_key, model, messages, output_config, provider, tools=None):
     headers = {
         "Content-Type": "application/json",
     }
@@ -447,31 +659,59 @@ def make_request(url, api_key, model, prompt, output_config, provider):
     else:
         headers["Authorization"] = "Bearer %s" % api_key
     if provider == "anthropic":
+        # Convert messages to Anthropic format
+        system_content = None
+        anthropic_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_content = msg["content"]
+            else:
+                anthropic_messages.append(msg)
         body = {
             "model": model,
             "max_tokens": 4096,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": anthropic_messages,
         }
+        if system_content:
+            body["system"] = system_content
+        all_tools = []
         if output_config and output_config.get("schema"):
             tool = build_schema_tool(output_config["schema"])
-            body["tools"] = [{
+            all_tools.append({
                 "name": tool["function"]["name"],
                 "description": tool["function"]["description"],
                 "input_schema": tool["function"]["parameters"],
-            }]
-            body["tool_choice"] = {"type": "tool", "name": "extract"}
+            })
+        if tools:
+            for tool_info in tools.values():
+                schema = tool_info["schema"]
+                all_tools.append({
+                    "name": schema["function"]["name"],
+                    "description": schema["function"]["description"],
+                    "input_schema": schema["function"]["parameters"],
+                })
+        if all_tools:
+            body["tools"] = all_tools
+            if output_config and output_config.get("schema") and not tools:
+                body["tool_choice"] = {"type": "tool", "name": "extract"}
     else:
         body = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
         }
+        all_tools = []
         if output_config and output_config.get("schema"):
-            tool = build_schema_tool(output_config["schema"])
-            body["tools"] = [tool]
-            body["tool_choice"] = {
-                "type": "function",
-                "function": {"name": "extract"}
-            }
+            all_tools.append(build_schema_tool(output_config["schema"]))
+        if tools:
+            for tool_info in tools.values():
+                all_tools.append(tool_info["schema"])
+        if all_tools:
+            body["tools"] = all_tools
+            if output_config and output_config.get("schema") and not tools:
+                body["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": "extract"}
+                }
     data = json.dumps(body).encode("utf-8")
     log("Request URL: %s" % url)
     log("Request body: %s" % json.dumps(body, indent=2))
@@ -489,12 +729,58 @@ def make_request(url, api_key, model, prompt, output_config, provider):
         sys.exit(1)
 
 
+def extract_tool_calls(response, provider):
+    tool_calls = []
+    if provider == "anthropic":
+        content = response.get("content", [])
+        for block in content:
+            if block.get("type") == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "arguments": block.get("input", {}),
+                })
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            for tc in message.get("tool_calls", []):
+                args_str = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(args_str)
+                except ValueError:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.get("id", ""),
+                    "name": tc.get("function", {}).get("name", ""),
+                    "arguments": args,
+                })
+    return tool_calls
+
+
+def extract_text_content(response, provider):
+    if provider == "anthropic":
+        content = response.get("content", [])
+        texts = []
+        for block in content:
+            if block.get("type") == "text":
+                texts.append(block.get("text", ""))
+        return "".join(texts)
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            return message.get("content", "") or ""
+        return ""
+
+
 def extract_response(response, output_config, provider):
     if provider == "anthropic":
         content = response.get("content", [])
         for block in content:
             if block.get("type") == "tool_use":
-                return json.dumps(block.get("input", {}), indent=2)
+                if block.get("name") == "extract":
+                    return json.dumps(block.get("input", {}), indent=2)
             if block.get("type") == "text":
                 return block.get("text", "")
         return ""
@@ -505,8 +791,50 @@ def extract_response(response, output_config, provider):
         message = choices[0].get("message", {})
         tool_calls = message.get("tool_calls", [])
         if tool_calls:
+            for tc in tool_calls:
+                if tc.get("function", {}).get("name") == "extract":
+                    return tc.get("function", {}).get("arguments", "{}")
             return tool_calls[0].get("function", {}).get("arguments", "{}")
         return message.get("content", "")
+
+
+def build_tool_result_message(tool_call, result, error, provider):
+    if provider == "anthropic":
+        if error:
+            content = json.dumps({"error": error})
+        else:
+            content = json.dumps(result) if not isinstance(result, str) else result
+        return {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": content,
+            }]
+        }
+    else:
+        if error:
+            content = json.dumps({"error": error})
+        else:
+            content = json.dumps(result) if not isinstance(result, str) else result
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": content,
+        }
+
+
+def build_assistant_message(response, provider):
+    if provider == "anthropic":
+        return {
+            "role": "assistant",
+            "content": response.get("content", []),
+        }
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            return choices[0].get("message", {"role": "assistant", "content": ""})
+        return {"role": "assistant", "content": ""}
 
 
 def apply_overrides(meta):
@@ -528,6 +856,7 @@ def parse_args(args):
     base_url = None
     use_cache = False
     clear_cache_flag = False
+    tool_paths = []
     overrides = {}
     remaining = []
     i = 0
@@ -562,6 +891,15 @@ def parse_args(args):
             base_url = arg[len("--base-url="):]
         elif arg.startswith("--openai-base-url="):
             base_url = arg[len("--openai-base-url="):]
+        elif arg == "--tool-path":
+            if i + 1 < len(args):
+                i += 1
+                tool_paths.append(args[i])
+            else:
+                print("--tool-path requires a directory path", file=sys.stderr)
+                sys.exit(1)
+        elif arg.startswith("--tool-path="):
+            tool_paths.append(arg[len("--tool-path="):])
         elif arg.startswith("--"):
             if "=" in arg:
                 key, value = arg[2:].split("=", 1)
@@ -577,7 +915,7 @@ def parse_args(args):
             remaining.append(arg)
         i += 1
     return verbose, save_response_path, base_url, use_cache, clear_cache_flag, \
-        overrides, remaining
+        tool_paths, overrides, remaining
 
 
 def read_stdin():
@@ -589,7 +927,7 @@ def read_stdin():
 def main():
     global VERBOSE, PROMPT_PATH
     verbose, save_response_path, arg_base_url, use_cache, clear_cache_flag, \
-        arg_overrides, remaining = parse_args(sys.argv[1:])
+        tool_paths, arg_overrides, remaining = parse_args(sys.argv[1:])
     VERBOSE = verbose
 
     if clear_cache_flag:
@@ -609,7 +947,11 @@ def main():
     meta = apply_overrides(meta)
     for key, value in arg_overrides.items():
         log("Override from arg --%s: %s" % (key, value))
-        meta[key] = value
+        if key == "tools" and isinstance(value, str):
+            # Parse comma-separated tools
+            meta[key] = [t.strip() for t in value.split(",")]
+        else:
+            meta[key] = value
     model_str = meta.get("model", "")
     if not model_str:
         print("No model specified in prompt file", file=sys.stderr)
@@ -636,40 +978,127 @@ def main():
     prompt = render_template(template, variables)
     log("Rendered prompt: %s" % prompt)
     output_config = meta.get("output", {})
+
+    # Build tool search paths
+    search_paths = []
+    search_paths.append(os.getcwd())
+    prompt_dir = os.path.dirname(os.path.abspath(prompt_path))
+    if prompt_dir not in search_paths:
+        search_paths.append(prompt_dir)
+    for tp in tool_paths:
+        abs_tp = os.path.abspath(tp)
+        if abs_tp not in search_paths:
+            search_paths.append(abs_tp)
+    log("Tool search paths: %s" % search_paths)
+
+    # Load tools
+    tool_specs = meta.get("tools", [])
+    if isinstance(tool_specs, str):
+        tool_specs = [t.strip() for t in tool_specs.split(",")]
+    tools = {}
+    if tool_specs:
+        tools = load_tools(tool_specs, search_paths)
+        log("Loaded %d tools: %s" % (len(tools), list(tools.keys())))
+
     if provider == "test":
         response = load_test_response(prompt_path)
         test_provider = response.get("_provider", "openai")
         result = extract_response(response, output_config, test_provider)
+        print(result)
+        return
+
+    base_url = arg_base_url or get_base_url()
+    if base_url:
+        url, api_key = get_provider_config(provider, base_url)
+        effective_provider = "openai"
     else:
-        base_url = arg_base_url or get_base_url()
-        if base_url:
-            url, api_key = get_provider_config(provider, base_url)
-            effective_provider = "openai"
-        else:
-            url, api_key = get_provider_config(provider)
-            effective_provider = provider
+        url, api_key = get_provider_config(provider)
+        effective_provider = provider
 
-        cached_response = None
-        key = None
-        if use_cache:
-            key = cache_key(prompt, meta)
-            log("Cache key: %s" % key)
-            cached_response = cache_get(key)
+    # Check cache
+    cached_response = None
+    key = None
+    if use_cache:
+        key = cache_key(prompt, meta)
+        log("Cache key: %s" % key)
+        cached_response = cache_get(key)
 
-        if cached_response:
-            response = cached_response
-            cached_provider = response.get("_provider", effective_provider)
-            result = extract_response(response, output_config, cached_provider)
-        else:
-            response = make_request(url, api_key, model, prompt, output_config,
-                                    effective_provider)
+    if cached_response:
+        response = cached_response
+        cached_provider = response.get("_provider", effective_provider)
+        result = extract_response(response, output_config, cached_provider)
+        print(result)
+        return
+
+    # Build initial messages
+    messages = [{"role": "user", "content": prompt}]
+
+    # Tool execution loop
+    while True:
+        response = make_request(url, api_key, model, messages, output_config,
+                                effective_provider, tools if tools else None)
+
+        # Print any text content immediately
+        text_content = extract_text_content(response, effective_provider)
+        if text_content:
+            print(text_content)
+
+        # Check for tool calls
+        tool_calls = extract_tool_calls(response, effective_provider)
+
+        # Filter out 'extract' tool calls - those are for structured output
+        user_tool_calls = [tc for tc in tool_calls if tc["name"] != "extract"]
+
+        if not user_tool_calls:
+            # No more tool calls, we're done
             if use_cache and key:
                 cache_set(key, response, effective_provider)
             if save_response_path:
                 save_response(response, effective_provider, save_response_path)
-            result = extract_response(response, output_config,
-                                      effective_provider)
-    print(result)
+            # If there was an extract tool call, output that
+            for tc in tool_calls:
+                if tc["name"] == "extract":
+                    print(json.dumps(tc["arguments"], indent=2))
+                    return
+            # Otherwise we already printed text content above
+            if not text_content:
+                result = extract_response(response, output_config,
+                                          effective_provider)
+                if result:
+                    print(result)
+            return
+
+        # Add assistant message to conversation
+        messages.append(build_assistant_message(response, effective_provider))
+
+        # Process each tool call
+        for tc in user_tool_calls:
+            tool_name = tc["name"]
+            tool_args = tc["arguments"]
+
+            if tool_name not in tools:
+                error_msg = "Unknown tool: %s" % tool_name
+                print("%s%s%s" % (RED, error_msg, RESET), file=sys.stderr)
+                messages.append(build_tool_result_message(
+                    tc, None, error_msg, effective_provider))
+                continue
+
+            # Prompt user for confirmation
+            if not prompt_user_for_tool(tool_name, tool_args):
+                error_msg = "Tool execution declined by user"
+                messages.append(build_tool_result_message(
+                    tc, None, error_msg, effective_provider))
+                continue
+
+            # Execute the tool
+            tool_func = tools[tool_name]["func"]
+            result, error = execute_tool(tool_func, tool_args)
+
+            if error:
+                print("%s%s%s" % (RED, error, RESET), file=sys.stderr)
+
+            messages.append(build_tool_result_message(
+                tc, result, error, effective_provider))
 
 
 if __name__ == "__main__":
