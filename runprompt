@@ -35,13 +35,12 @@ RESET = "\033[0m"
 TIMEOUT = 120
 
 VERBOSE = False
-PROMPT_PATH = None
 
 # === MAIN ENTRY POINT ===
 
 
 def main():
-    global VERBOSE, PROMPT_PATH
+    global VERBOSE
     verbose, save_response_path, arg_base_url, use_cache, clear_cache_flag, \
         safe_yes, tool_paths, arg_overrides, remaining = parse_args(sys.argv[1:])
     VERBOSE = verbose
@@ -58,7 +57,6 @@ def main():
         print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
     prompt_path = remaining[0]
-    PROMPT_PATH = prompt_path
     meta, template = parse_prompt_file(prompt_path)
     meta = apply_overrides(meta)
     for key, value in arg_overrides.items():
@@ -288,10 +286,6 @@ Examples:
   OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
 """
 
-# Global for tracking if stdin has been consumed
-STDIN_CONSUMED = False
-
-
 def parse_args(args):
     verbose = False
     save_response_path = None
@@ -364,13 +358,11 @@ def parse_args(args):
 
 
 def read_stdin():
-    global STDIN_CONSUMED
     if sys.stdin.isatty():
         return None
     content = sys.stdin.read()
     if not content:
         return None
-    STDIN_CONSUMED = True
     return content.strip() or None
 
 
