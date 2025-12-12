@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Single-file utility for running .prompt scripts."""
 import sys
 import os
 import json
@@ -36,943 +37,7 @@ TIMEOUT = 120
 VERBOSE = False
 PROMPT_PATH = None
 
-HELP_TEXT = """\
-Usage: runprompt [options] <prompt_file>
-
-Run Dotprompt (.prompt) files from the command line.
-
-Options:
-  -h, --help              Show this help message and exit
-  -v, --verbose           Show request/response details
-  -c, --cache             Enable response caching
-  --clear-cache           Clear the response cache and exit
-  --save-response <file>  Save raw API response to file
-  --base-url <url>        Use custom OpenAI-compatible endpoint
-  --openai-base-url <url> Use custom OpenAI-compatible endpoint
-  --tool-path <path>      Add directory to tool import path (can be repeated)
-  --safe-yes              Auto-approve tool calls for functions marked as safe
-  --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
-  --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
-
-Input:
-  Pipe JSON to set template variables: echo '{"name": "World"}' | runprompt hello.prompt
-  Pipe text for {{STDIN}} variable:    echo "some text" | runprompt summarize.prompt
-  Pass args for {{ARGS}} variable:     runprompt hello.prompt Some text here
-
-Environment:
-  ANTHROPIC_API_KEY       API key for Anthropic models
-  OPENAI_API_KEY          API key for OpenAI models
-  GOOGLE_API_KEY          API key for Google AI models
-  OPENROUTER_API_KEY      API key for OpenRouter models
-  OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
-  BASE_URL                Custom OpenAI-compatible endpoint URL (fallback)
-  RUNPROMPT_<KEY>         Override frontmatter (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
-  RUNPROMPT_CACHE         Enable caching (set to 1)
-  RUNPROMPT_CACHE_DIR     Custom cache directory
-
-Tools:
-  Mark a function as safe by setting fn.safe = True after the definition:
-  
-    def my_safe_tool(x: str):
-        \"\"\"A safe tool that only reads data.\"\"\"
-        return "result"
-    my_safe_tool.safe = True
-  
-  Safe tools are auto-approved when --safe-yes is passed.
-
-Examples:
-  runprompt hello.prompt
-  runprompt hello.prompt Some text to process
-  echo '{"name": "World"}' | runprompt hello.prompt
-  runprompt --model openai/gpt-4o hello.prompt
-  runprompt -v --save-response out.json hello.prompt
-  runprompt --cache hello.prompt
-  runprompt --safe-yes tool_prompt.prompt
-  OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
-"""
-
-# Global for tracking if stdin has been consumed
-STDIN_CONSUMED = False
-
-
-def log(msg):
-    if VERBOSE:
-        print(msg, file=sys.stderr)
-
-
-def get_cache_dir():
-    if os.environ.get("RUNPROMPT_CACHE_DIR"):
-        return os.environ["RUNPROMPT_CACHE_DIR"]
-    xdg_cache = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
-    return os.path.join(xdg_cache, "runprompt")
-
-
-def cache_key(rendered_prompt, effective_meta):
-    data = json.dumps({
-        "prompt": rendered_prompt,
-        "meta": effective_meta,
-    }, sort_keys=True)
-    return hashlib.sha256(data.encode()).hexdigest()
-
-
-def cache_get(key):
-    cache_dir = get_cache_dir()
-    cache_file = os.path.join(cache_dir, "%s.json" % key)
-    if os.path.exists(cache_file):
-        log("Cache hit: %s" % cache_file)
-        with open(cache_file, "r") as f:
-            return json.load(f)
-    log("Cache miss")
-    return None
-
-
-def cache_set(key, response, provider):
-    cache_dir = get_cache_dir()
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-    cache_file = os.path.join(cache_dir, "%s.json" % key)
-    response_with_provider = {"_provider": provider}
-    response_with_provider.update(response)
-    with open(cache_file, "w") as f:
-        json.dump(response_with_provider, f, indent=2)
-    log("Cached response: %s" % cache_file)
-
-
-def clear_cache():
-    cache_dir = get_cache_dir()
-    if not os.path.exists(cache_dir):
-        print("Cache directory does not exist: %s" % cache_dir)
-        return
-    count = 0
-    for filename in os.listdir(cache_dir):
-        if filename.endswith(".json"):
-            os.remove(os.path.join(cache_dir, filename))
-            count += 1
-    print("Cleared %d cached response(s) from %s" % (count, cache_dir))
-
-
-def parse_prompt_file(path):
-    with open(path, "r") as f:
-        content = f.read()
-    # Skip shebang line if present
-    if content.startswith("#!"):
-        content = content.split("\n", 1)[1] if "\n" in content else ""
-    # Handle ---frontmatter---template format
-    if content.startswith("---"):
-        parts = content.split("---", 2)
-        if len(parts) >= 3:
-            meta_str = parts[1].strip()
-            template = parts[2].strip()
-            meta = parse_yaml(meta_str)
-            return meta, template
-        return {}, content.strip()
-    # Handle frontmatter---template format (no opening ---)
-    if "---" in content:
-        parts = content.split("---", 1)
-        meta_str = parts[0].strip()
-        template = parts[1].strip()
-        meta = parse_yaml(meta_str)
-        return meta, template
-    # No frontmatter delimiter found
-    return {}, content.strip()
-
-
-def parse_yaml(s):
-    result = {}
-    stack = [(result, -1)]
-    current_list_key = None
-    current_list = None
-    current_list_indent = -1
-    for line in s.split("\n"):
-        if not line.strip() or line.strip().startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip())
-        # Check if this is a list item
-        list_match = re.match(r"^(\s*)-\s*(.*)", line)
-        if list_match:
-            item_value = list_match.group(2).strip()
-            if current_list is not None and indent > current_list_indent:
-                current_list.append(item_value)
-                continue
-        # Not a list item or different context - reset list tracking
-        if current_list is not None and indent <= current_list_indent:
-            current_list = None
-            current_list_key = None
-            current_list_indent = -1
-        while stack and indent <= stack[-1][1]:
-            stack.pop()
-        match = re.match(r"^(\s*)([^:]+):\s*(.*)", line)
-        if not match:
-            continue
-        key = match.group(2).strip()
-        value = match.group(3).strip()
-        parent = stack[-1][0]
-        if value:
-            if value.lower() == "true":
-                parent[key] = True
-            elif value.lower() == "false":
-                parent[key] = False
-            elif re.match(r"^-?\d+$", value):
-                parent[key] = int(value)
-            elif re.match(r"^-?\d+\.\d+$", value):
-                parent[key] = float(value)
-            else:
-                parent[key] = value
-        else:
-            parent[key] = {}
-            stack.append((parent[key], indent))
-            # Check if next lines are list items
-            current_list_key = key
-            current_list = []
-            parent[key] = current_list
-            current_list_indent = indent
-    # Convert empty lists back to empty dicts
-    def fix_empty_lists(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if isinstance(v, list) and len(v) == 0:
-                    obj[k] = {}
-                else:
-                    fix_empty_lists(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                fix_empty_lists(item)
-    fix_empty_lists(result)
-    return result
-
-
-def parse_yaml_value(s):
-    s = s.strip()
-    if not s:
-        return None
-    if s.lower() == "true":
-        return True
-    if s.lower() == "false":
-        return False
-    if re.match(r"^-?\d+$", s):
-        return int(s)
-    if re.match(r"^-?\d+\.\d+$", s):
-        return float(s)
-    if "\n" in s or s.startswith("{"):
-        try:
-            return json.loads(s)
-        except ValueError:
-            pass
-        parsed = parse_yaml(s)
-        if parsed:
-            return parsed
-    return s
-
-
-def render_template(template, variables):
-    def lookup(name, ctx):
-        name = name.strip()
-        if name == ".":
-            return ctx
-        # Handle @index, @first, @last, @key
-        if name.startswith("@"):
-            return ctx.get(name, "")
-        for part in name.split("."):
-            if isinstance(ctx, dict):
-                ctx = ctx.get(part, "")
-            else:
-                return ""
-        return ctx
-
-    def render(tmpl, ctx):
-        # Remove comments: {{! ... }}
-        tmpl = re.sub(r"\{\{!.*?\}\}", "", tmpl, flags=re.DOTALL)
-
-        # Process {{#each key}}...{{/each}}
-        def each_replace(match):
-            key = match.group(1)
-            inner = match.group(2)
-            val = lookup(key, ctx)
-            result = []
-            if isinstance(val, list):
-                for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-            elif isinstance(val, dict):
-                keys = list(val.keys())
-                for i, k in enumerate(keys):
-                    item = val[k]
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@key"] = k
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(keys) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-            return "".join(result)
-
-        tmpl = re.sub(
-            r"\{\{#each\s+(\w+)\}\}(.*?)\{\{/each\}\}",
-            each_replace,
-            tmpl,
-            flags=re.DOTALL
-        )
-
-        # Process sections: {{#key}}...{{/key}}
-        def section_replace(match):
-            key = match.group(1)
-            inner = match.group(2)
-            val = lookup(key, ctx)
-            if isinstance(val, list):
-                result = []
-                for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {"_value": item}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-                return "".join(result)
-            if val:
-                new_ctx = val if isinstance(val, dict) else ctx
-                return render(inner, new_ctx)
-            return ""
-
-        # Process inverted sections: {{^key}}...{{/key}}
-        def inverted_replace(match):
-            key = match.group(1)
-            inner = match.group(2)
-            val = lookup(key, ctx)
-            if not val or (isinstance(val, list) and len(val) == 0):
-                return render(inner, ctx)
-            return ""
-
-        # Process sections first (innermost first via non-greedy)
-        tmpl = re.sub(
-            r"\{\{#(@?\w+)\}\}(.*?)\{\{/\1\}\}",
-            section_replace,
-            tmpl,
-            flags=re.DOTALL
-        )
-        tmpl = re.sub(
-            r"\{\{\^(@?\w+)\}\}(.*?)\{\{/\1\}\}",
-            inverted_replace,
-            tmpl,
-            flags=re.DOTALL
-        )
-
-        # Process variables
-        def var_replace(match):
-            key = match.group(1).strip()
-            val = lookup(key, ctx)
-            # Handle special "." lookup for non-dict items in lists
-            if key == "." and "." in ctx:
-                return str(ctx["."])
-            return str(val)
-        tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
-
-        return tmpl
-
-    return render(template, variables)
-
-
-def parse_model_string(model_str):
-    if model_str == "test":
-        return "test", None
-    parts = model_str.split("/", 1)
-    if len(parts) == 1:
-        return None, parts[0]
-    return parts[0], parts[1]
-
-
-def get_base_url():
-    return os.environ.get("OPENAI_BASE_URL") or os.environ.get("BASE_URL")
-
-
-def get_provider_config(provider, base_url=None):
-    if base_url:
-        url = base_url.rstrip("/") + "/chat/completions"
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        log("Using custom base URL: %s" % url)
-        return url, api_key
-    if provider not in PROVIDERS:
-        print("Unknown provider: %s" % provider, file=sys.stderr)
-        sys.exit(1)
-    config = PROVIDERS[provider]
-    api_key = os.environ.get(config["env"])
-    if not api_key:
-        print("Missing API key: %s" % config["env"], file=sys.stderr)
-        sys.exit(1)
-    return config["url"], api_key
-
-
-def build_schema_tool(schema):
-    properties = {}
-    required = []
-    for key, value in schema.items():
-        clean_key = key.rstrip("?")
-        is_optional = key.endswith("?")
-        parts = value.split(",", 1) if isinstance(value, str) else [value]
-        type_str = parts[0].strip() if parts else "string"
-        description = parts[1].strip() if len(parts) > 1 else ""
-        json_type = "string"
-        if type_str == "number":
-            json_type = "number"
-        elif type_str == "boolean":
-            json_type = "boolean"
-        prop = {"type": json_type}
-        if description:
-            prop["description"] = description
-        properties[clean_key] = prop
-        if not is_optional:
-            required.append(clean_key)
-    return {
-        "type": "function",
-        "function": {
-            "name": "extract",
-            "description": "Extract structured data",
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
-    }
-
-
-def python_type_to_json_type(py_type):
-    if py_type is None:
-        return "string"
-    type_name = getattr(py_type, "__name__", str(py_type))
-    mapping = {
-        "str": "string",
-        "int": "integer",
-        "float": "number",
-        "bool": "boolean",
-        "list": "array",
-        "dict": "object",
-    }
-    return mapping.get(type_name, "string")
-
-
-def function_to_tool_schema(func):
-    doc = inspect.getdoc(func)
-    if not doc:
-        return None
-    sig = inspect.signature(func)
-    properties = {}
-    required = []
-    for param_name, param in sig.parameters.items():
-        if param_name in ("self", "cls"):
-            continue
-        param_type = param.annotation
-        if param_type is inspect.Parameter.empty:
-            param_type = None
-        json_type = python_type_to_json_type(param_type)
-        properties[param_name] = {"type": json_type}
-        if param.default is inspect.Parameter.empty:
-            required.append(param_name)
-    return {
-        "type": "function",
-        "function": {
-            "name": func.__name__,
-            "description": doc,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-            },
-        },
-    }
-
-
-def load_module_from_path(module_name, search_paths):
-    for base_path in search_paths:
-        # Try as a direct file
-        file_path = os.path.join(base_path, module_name + ".py")
-        if os.path.exists(file_path):
-            spec = importlib.util.spec_from_file_location(module_name, file_path)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-            return module
-        # Try as a package path (e.g., package.submodule -> package/submodule.py)
-        parts = module_name.split(".")
-        if len(parts) > 1:
-            file_path = os.path.join(base_path, *parts[:-1], parts[-1] + ".py")
-            if os.path.exists(file_path):
-                spec = importlib.util.spec_from_file_location(module_name, file_path)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                return module
-            # Also try package/submodule/__init__.py style
-            file_path = os.path.join(base_path, *parts, "__init__.py")
-            if os.path.exists(file_path):
-                spec = importlib.util.spec_from_file_location(module_name, file_path)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                return module
-    return None
-
-
-def load_tools(tool_specs, search_paths):
-    tools = {}  # name -> {"schema": ..., "func": ...}
-    for spec in tool_specs:
-        if spec.endswith(".*"):
-            # Import all functions from module
-            module_name = spec[:-2]
-            try:
-                module = load_module_from_path(module_name, search_paths)
-                if module is None:
-                    raise ImportError("No module named '%s'" % module_name)
-                for name in dir(module):
-                    if name.startswith("_"):
-                        continue
-                    obj = getattr(module, name)
-                    if callable(obj) and inspect.getdoc(obj):
-                        schema = function_to_tool_schema(obj)
-                        if schema:
-                            tools[name] = {"schema": schema, "func": obj}
-                            log("Loaded tool: %s from %s" % (name, module_name))
-            except Exception as e:
-                print("Warning: Could not import tool '%s': %s" % (spec, e),
-                      file=sys.stderr)
-        else:
-            # Import specific function
-            parts = spec.rsplit(".", 1)
-            if len(parts) != 2:
-                print("Warning: Invalid tool spec '%s'" % spec, file=sys.stderr)
-                continue
-            module_name, func_name = parts
-            try:
-                module = load_module_from_path(module_name, search_paths)
-                if module is None:
-                    raise ImportError("No module named '%s'" % module_name)
-                if not hasattr(module, func_name):
-                    raise AttributeError("Module '%s' has no function '%s'" %
-                                         (module_name, func_name))
-                func = getattr(module, func_name)
-                if not callable(func):
-                    raise TypeError("'%s' is not callable" % func_name)
-                schema = function_to_tool_schema(func)
-                if schema:
-                    tools[func_name] = {"schema": schema, "func": func}
-                    log("Loaded tool: %s from %s" % (func_name, module_name))
-                else:
-                    print("Warning: Function '%s' has no docstring" % func_name,
-                          file=sys.stderr)
-            except Exception as e:
-                print("Warning: Could not import tool '%s': %s" % (spec, e),
-                      file=sys.stderr)
-    return tools
-
-
-def truncate_value(value, max_len=50):
-    s = str(value)
-    if len(s) <= max_len:
-        return s
-    return s[:max_len - 3] + "..."
-
-
-def format_tool_call_summary(tool_name, args):
-    if not args:
-        return "Tool: %s()" % tool_name
-    arg_parts = []
-    for k, v in args.items():
-        if isinstance(v, str):
-            truncated = truncate_value(v, 30)
-            arg_parts.append('%s="%s"' % (k, truncated))
-        else:
-            arg_parts.append("%s=%s" % (k, truncate_value(v, 30)))
-    args_str = ", ".join(arg_parts)
-    if len(args_str) > 60:
-        args_str = args_str[:57] + "..."
-    return "Tool: %s(%s)" % (tool_name, args_str)
-
-
-def print_tool_call(tool_name, args):
-    summary = format_tool_call_summary(tool_name, args)
-    print("%s%s%s" % (YELLOW, summary, RESET), file=sys.stderr)
-
-
-def read_tty_line(prompt_text):
-    # If stdin is a tty (e.g. running in a pty for testing), read from it directly
-    if sys.stdin.isatty():
-        sys.stderr.write(prompt_text)
-        sys.stderr.flush()
-        return sys.stdin.readline().strip()
-    # Try /dev/tty for interactive input when stdin is a pipe
-    try:
-        tty = open("/dev/tty", "r")
-        sys.stderr.write(prompt_text)
-        sys.stderr.flush()
-        response = tty.readline().strip()
-        tty.close()
-        return response
-    except (IOError, OSError):
-        pass
-    # No input available
-    return None
-
-
-def prompt_user_for_tool(tool_name, args):
-    while True:
-        response = read_tty_line("Run this tool? [Y/n]: ")
-        if response is None:
-            return True
-        if response == "" or response.lower() in ("y", "yes"):
-            return True
-        if response.lower() in ("n", "no"):
-            return False
-        print("Please enter 'y' or 'n'", file=sys.stderr)
-
-
-def is_tool_safe(tool_func):
-    return getattr(tool_func, 'safe', False)
-
-
-def execute_tool(tool_func, args):
-    try:
-        result = tool_func(**args)
-        return result, None
-    except Exception as e:
-        error_msg = "%s: %s" % (type(e).__name__, str(e))
-        return None, error_msg
-
-
-def extract_error_message(error_body):
-    try:
-        data = json.loads(error_body)
-        if "error" in data:
-            err = data["error"]
-            if isinstance(err, dict):
-                err_type = err.get("type", "")
-                message = err.get("message", "")
-                if err_type and message:
-                    return "%s: %s" % (err_type, message)
-                if message:
-                    return message
-                if err_type:
-                    return err_type
-            if isinstance(err, str):
-                return err
-        if "message" in data:
-            return data["message"]
-    except ValueError:
-        pass
-    return error_body
-
-
-def load_test_response(prompt_path):
-    test_file = prompt_path + ".test-response"
-    if not os.path.exists(test_file):
-        print("Test response file not found: %s" % test_file, file=sys.stderr)
-        sys.exit(1)
-    with open(test_file, "r") as f:
-        content = f.read()
-    log("Loaded test response from: %s" % test_file)
-    return json.loads(content)
-
-
-def save_response(response, provider, save_path):
-    response_with_provider = {"_provider": provider}
-    response_with_provider.update(response)
-    with open(save_path, "w") as f:
-        json.dump(response_with_provider, f, indent=2)
-    log("Saved response to: %s" % save_path)
-
-
-def make_request(url, api_key, model, messages, output_config, provider, tools=None):
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if provider == "anthropic":
-        headers["x-api-key"] = api_key
-        headers["anthropic-version"] = "2023-06-01"
-    else:
-        headers["Authorization"] = "Bearer %s" % api_key
-    if provider == "anthropic":
-        # Convert messages to Anthropic format
-        system_content = None
-        anthropic_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                system_content = msg["content"]
-            else:
-                anthropic_messages.append(msg)
-        body = {
-            "model": model,
-            "max_tokens": 4096,
-            "messages": anthropic_messages,
-        }
-        if system_content:
-            body["system"] = system_content
-        all_tools = []
-        if output_config and output_config.get("schema"):
-            tool = build_schema_tool(output_config["schema"])
-            all_tools.append({
-                "name": tool["function"]["name"],
-                "description": tool["function"]["description"],
-                "input_schema": tool["function"]["parameters"],
-            })
-        if tools:
-            for tool_info in tools.values():
-                schema = tool_info["schema"]
-                all_tools.append({
-                    "name": schema["function"]["name"],
-                    "description": schema["function"]["description"],
-                    "input_schema": schema["function"]["parameters"],
-                })
-        if all_tools:
-            body["tools"] = all_tools
-            if output_config and output_config.get("schema") and not tools:
-                body["tool_choice"] = {"type": "tool", "name": "extract"}
-    else:
-        body = {
-            "model": model,
-            "messages": messages,
-        }
-        all_tools = []
-        if output_config and output_config.get("schema"):
-            all_tools.append(build_schema_tool(output_config["schema"]))
-        if tools:
-            for tool_info in tools.values():
-                all_tools.append(tool_info["schema"])
-        if all_tools:
-            body["tools"] = all_tools
-            if output_config and output_config.get("schema") and not tools:
-                body["tool_choice"] = {
-                    "type": "function",
-                    "function": {"name": "extract"}
-                }
-    data = json.dumps(body).encode("utf-8")
-    log("Request URL: %s" % url)
-    log("Request body: %s" % json.dumps(body, indent=2))
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            response_body = resp.read().decode("utf-8")
-            log("Response: %s" % response_body)
-            return json.loads(response_body)
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8")
-        log("Error response: %s" % error_body)
-        message = extract_error_message(error_body)
-        print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
-        sys.exit(1)
-
-
-def extract_tool_calls(response, provider):
-    tool_calls = []
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
-            if block.get("type") == "tool_use":
-                tool_calls.append({
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "arguments": block.get("input", {}),
-                })
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            for tc in message.get("tool_calls", []):
-                args_str = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except ValueError:
-                    args = {}
-                tool_calls.append({
-                    "id": tc.get("id", ""),
-                    "name": tc.get("function", {}).get("name", ""),
-                    "arguments": args,
-                })
-    return tool_calls
-
-
-def extract_text_content(response, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        texts = []
-        for block in content:
-            if block.get("type") == "text":
-                texts.append(block.get("text", ""))
-        return "".join(texts)
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            return message.get("content", "") or ""
-        return ""
-
-
-def extract_response(response, output_config, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
-            if block.get("type") == "tool_use":
-                if block.get("name") == "extract":
-                    return json.dumps(block.get("input", {}), indent=2)
-            if block.get("type") == "text":
-                return block.get("text", "")
-        return ""
-    else:
-        choices = response.get("choices", [])
-        if not choices:
-            return ""
-        message = choices[0].get("message", {})
-        tool_calls = message.get("tool_calls", [])
-        if tool_calls:
-            for tc in tool_calls:
-                if tc.get("function", {}).get("name") == "extract":
-                    return tc.get("function", {}).get("arguments", "{}")
-            return tool_calls[0].get("function", {}).get("arguments", "{}")
-        return message.get("content", "")
-
-
-def build_tool_result_message(tool_call, result, error, provider):
-    if provider == "anthropic":
-        if error:
-            content = json.dumps({"error": error})
-        else:
-            content = json.dumps(result) if not isinstance(result, str) else result
-        return {
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": tool_call["id"],
-                "content": content,
-            }]
-        }
-    else:
-        if error:
-            content = json.dumps({"error": error})
-        else:
-            content = json.dumps(result) if not isinstance(result, str) else result
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call["id"],
-            "content": content,
-        }
-
-
-def build_assistant_message(response, provider):
-    if provider == "anthropic":
-        return {
-            "role": "assistant",
-            "content": response.get("content", []),
-        }
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            return choices[0].get("message", {"role": "assistant", "content": ""})
-        return {"role": "assistant", "content": ""}
-
-
-def apply_overrides(meta):
-    for env_key, env_value in os.environ.items():
-        if env_key.startswith("RUNPROMPT_"):
-            if env_key in ("RUNPROMPT_CACHE", "RUNPROMPT_CACHE_DIR"):
-                continue
-            key = env_key[10:].lower()
-            parsed = parse_yaml_value(env_value)
-            if parsed is not None:
-                log("Override from env %s: %s" % (env_key, parsed))
-                meta[key] = parsed
-    return meta
-
-
-def parse_args(args):
-    verbose = False
-    save_response_path = None
-    base_url = None
-    use_cache = False
-    clear_cache_flag = False
-    safe_yes = False
-    tool_paths = []
-    overrides = {}
-    remaining = []
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg == "-h" or arg == "--help":
-            print(HELP_TEXT)
-            sys.exit(0)
-        elif arg == "-v" or arg == "--verbose":
-            verbose = True
-        elif arg == "-c" or arg == "--cache":
-            use_cache = True
-        elif arg == "--clear-cache":
-            clear_cache_flag = True
-        elif arg == "--safe-yes":
-            safe_yes = True
-        elif arg == "--save-response":
-            if i + 1 < len(args):
-                i += 1
-                save_response_path = args[i]
-            else:
-                print("--save-response requires a file path", file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith("--save-response="):
-            save_response_path = arg[len("--save-response="):]
-        elif arg == "--base-url" or arg == "--openai-base-url":
-            if i + 1 < len(args):
-                i += 1
-                base_url = args[i]
-            else:
-                print("%s requires a URL" % arg, file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith("--base-url="):
-            base_url = arg[len("--base-url="):]
-        elif arg.startswith("--openai-base-url="):
-            base_url = arg[len("--openai-base-url="):]
-        elif arg == "--tool-path":
-            if i + 1 < len(args):
-                i += 1
-                tool_paths.append(args[i])
-            else:
-                print("--tool-path requires a directory path", file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith("--tool-path="):
-            tool_paths.append(arg[len("--tool-path="):])
-        elif arg.startswith("--"):
-            if "=" in arg:
-                key, value = arg[2:].split("=", 1)
-                overrides[key] = parse_yaml_value(value)
-            else:
-                key = arg[2:]
-                if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                    i += 1
-                    overrides[key] = parse_yaml_value(args[i])
-                else:
-                    overrides[key] = True
-        else:
-            remaining.append(arg)
-        i += 1
-    return verbose, save_response_path, base_url, use_cache, clear_cache_flag, \
-        safe_yes, tool_paths, overrides, remaining
-
-
-def read_stdin():
-    global STDIN_CONSUMED
-    if sys.stdin.isatty():
-        return None
-    content = sys.stdin.read()
-    if not content:
-        return None
-    STDIN_CONSUMED = True
-    return content.strip() or None
+# === MAIN ENTRY POINT ===
 
 
 def main():
@@ -1166,6 +231,969 @@ def main():
 
             messages.append(build_tool_result_message(
                 tc, result, error, effective_provider))
+
+
+HELP_TEXT = """\
+Usage: runprompt [options] <prompt_file>
+
+Run Dotprompt (.prompt) files from the command line.
+
+Options:
+  -h, --help              Show this help message and exit
+  -v, --verbose           Show request/response details
+  -c, --cache             Enable response caching
+  --clear-cache           Clear the response cache and exit
+  --save-response <file>  Save raw API response to file
+  --base-url <url>        Use custom OpenAI-compatible endpoint
+  --openai-base-url <url> Use custom OpenAI-compatible endpoint
+  --tool-path <path>      Add directory to tool import path (can be repeated)
+  --safe-yes              Auto-approve tool calls for functions marked as safe
+  --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
+  --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
+
+Input:
+  Pipe JSON to set template variables: echo '{"name": "World"}' | runprompt hello.prompt
+  Pipe text for {{STDIN}} variable:    echo "some text" | runprompt summarize.prompt
+  Pass args for {{ARGS}} variable:     runprompt hello.prompt Some text here
+
+Environment:
+  ANTHROPIC_API_KEY       API key for Anthropic models
+  OPENAI_API_KEY          API key for OpenAI models
+  GOOGLE_API_KEY          API key for Google AI models
+  OPENROUTER_API_KEY      API key for OpenRouter models
+  OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
+  BASE_URL                Custom OpenAI-compatible endpoint URL (fallback)
+  RUNPROMPT_<KEY>         Override frontmatter (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
+  RUNPROMPT_CACHE         Enable caching (set to 1)
+  RUNPROMPT_CACHE_DIR     Custom cache directory
+
+Tools:
+  Mark a function as safe by setting fn.safe = True after the definition:
+  
+    def my_safe_tool(x: str):
+        \"\"\"A safe tool that only reads data.\"\"\"
+        return "result"
+    my_safe_tool.safe = True
+  
+  Safe tools are auto-approved when --safe-yes is passed.
+
+Examples:
+  runprompt hello.prompt
+  runprompt hello.prompt Some text to process
+  echo '{"name": "World"}' | runprompt hello.prompt
+  runprompt --model openai/gpt-4o hello.prompt
+  runprompt -v --save-response out.json hello.prompt
+  runprompt --cache hello.prompt
+  runprompt --safe-yes tool_prompt.prompt
+  OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
+"""
+
+# Global for tracking if stdin has been consumed
+STDIN_CONSUMED = False
+
+
+def parse_args(args):
+    verbose = False
+    save_response_path = None
+    base_url = None
+    use_cache = False
+    clear_cache_flag = False
+    safe_yes = False
+    tool_paths = []
+    overrides = {}
+    remaining = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "-h" or arg == "--help":
+            print(HELP_TEXT)
+            sys.exit(0)
+        elif arg == "-v" or arg == "--verbose":
+            verbose = True
+        elif arg == "-c" or arg == "--cache":
+            use_cache = True
+        elif arg == "--clear-cache":
+            clear_cache_flag = True
+        elif arg == "--safe-yes":
+            safe_yes = True
+        elif arg == "--save-response":
+            if i + 1 < len(args):
+                i += 1
+                save_response_path = args[i]
+            else:
+                print("--save-response requires a file path", file=sys.stderr)
+                sys.exit(1)
+        elif arg.startswith("--save-response="):
+            save_response_path = arg[len("--save-response="):]
+        elif arg == "--base-url" or arg == "--openai-base-url":
+            if i + 1 < len(args):
+                i += 1
+                base_url = args[i]
+            else:
+                print("%s requires a URL" % arg, file=sys.stderr)
+                sys.exit(1)
+        elif arg.startswith("--base-url="):
+            base_url = arg[len("--base-url="):]
+        elif arg.startswith("--openai-base-url="):
+            base_url = arg[len("--openai-base-url="):]
+        elif arg == "--tool-path":
+            if i + 1 < len(args):
+                i += 1
+                tool_paths.append(args[i])
+            else:
+                print("--tool-path requires a directory path", file=sys.stderr)
+                sys.exit(1)
+        elif arg.startswith("--tool-path="):
+            tool_paths.append(arg[len("--tool-path="):])
+        elif arg.startswith("--"):
+            if "=" in arg:
+                key, value = arg[2:].split("=", 1)
+                overrides[key] = parse_yaml_value(value)
+            else:
+                key = arg[2:]
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    i += 1
+                    overrides[key] = parse_yaml_value(args[i])
+                else:
+                    overrides[key] = True
+        else:
+            remaining.append(arg)
+        i += 1
+    return verbose, save_response_path, base_url, use_cache, clear_cache_flag, \
+        safe_yes, tool_paths, overrides, remaining
+
+
+def read_stdin():
+    global STDIN_CONSUMED
+    if sys.stdin.isatty():
+        return None
+    content = sys.stdin.read()
+    if not content:
+        return None
+    STDIN_CONSUMED = True
+    return content.strip() or None
+
+
+# === PROMPT FILE HANDLING ===
+
+
+def parse_prompt_file(path):
+    with open(path, "r") as f:
+        content = f.read()
+    # Skip shebang line if present
+    if content.startswith("#!"):
+        content = content.split("\n", 1)[1] if "\n" in content else ""
+    # Handle ---frontmatter---template format
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            meta_str = parts[1].strip()
+            template = parts[2].strip()
+            meta = parse_yaml(meta_str)
+            return meta, template
+        return {}, content.strip()
+    # Handle frontmatter---template format (no opening ---)
+    if "---" in content:
+        parts = content.split("---", 1)
+        meta_str = parts[0].strip()
+        template = parts[1].strip()
+        meta = parse_yaml(meta_str)
+        return meta, template
+    # No frontmatter delimiter found
+    return {}, content.strip()
+
+
+def parse_yaml(s):
+    result = {}
+    stack = [(result, -1)]
+    current_list_key = None
+    current_list = None
+    current_list_indent = -1
+    for line in s.split("\n"):
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        # Check if this is a list item
+        list_match = re.match(r"^(\s*)-\s*(.*)", line)
+        if list_match:
+            item_value = list_match.group(2).strip()
+            if current_list is not None and indent > current_list_indent:
+                current_list.append(item_value)
+                continue
+        # Not a list item or different context - reset list tracking
+        if current_list is not None and indent <= current_list_indent:
+            current_list = None
+            current_list_key = None
+            current_list_indent = -1
+        while stack and indent <= stack[-1][1]:
+            stack.pop()
+        match = re.match(r"^(\s*)([^:]+):\s*(.*)", line)
+        if not match:
+            continue
+        key = match.group(2).strip()
+        value = match.group(3).strip()
+        parent = stack[-1][0]
+        if value:
+            if value.lower() == "true":
+                parent[key] = True
+            elif value.lower() == "false":
+                parent[key] = False
+            elif re.match(r"^-?\d+$", value):
+                parent[key] = int(value)
+            elif re.match(r"^-?\d+\.\d+$", value):
+                parent[key] = float(value)
+            else:
+                parent[key] = value
+        else:
+            parent[key] = {}
+            stack.append((parent[key], indent))
+            # Check if next lines are list items
+            current_list_key = key
+            current_list = []
+            parent[key] = current_list
+            current_list_indent = indent
+    # Convert empty lists back to empty dicts
+    def fix_empty_lists(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, list) and len(v) == 0:
+                    obj[k] = {}
+                else:
+                    fix_empty_lists(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                fix_empty_lists(item)
+    fix_empty_lists(result)
+    return result
+
+
+def parse_yaml_value(s):
+    s = s.strip()
+    if not s:
+        return None
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+    if re.match(r"^-?\d+$", s):
+        return int(s)
+    if re.match(r"^-?\d+\.\d+$", s):
+        return float(s)
+    if "\n" in s or s.startswith("{"):
+        try:
+            return json.loads(s)
+        except ValueError:
+            pass
+        parsed = parse_yaml(s)
+        if parsed:
+            return parsed
+    return s
+
+
+def apply_overrides(meta):
+    for env_key, env_value in os.environ.items():
+        if env_key.startswith("RUNPROMPT_"):
+            if env_key in ("RUNPROMPT_CACHE", "RUNPROMPT_CACHE_DIR"):
+                continue
+            key = env_key[10:].lower()
+            parsed = parse_yaml_value(env_value)
+            if parsed is not None:
+                log("Override from env %s: %s" % (env_key, parsed))
+                meta[key] = parsed
+    return meta
+
+
+# === TEMPLATE RENDERING ===
+
+
+def render_template(template, variables):
+    def lookup(name, ctx):
+        name = name.strip()
+        if name == ".":
+            return ctx
+        # Handle @index, @first, @last, @key
+        if name.startswith("@"):
+            return ctx.get(name, "")
+        for part in name.split("."):
+            if isinstance(ctx, dict):
+                ctx = ctx.get(part, "")
+            else:
+                return ""
+        return ctx
+
+    def render(tmpl, ctx):
+        # Remove comments: {{! ... }}
+        tmpl = re.sub(r"\{\{!.*?\}\}", "", tmpl, flags=re.DOTALL)
+
+        # Process {{#each key}}...{{/each}}
+        def each_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            result = []
+            if isinstance(val, list):
+                for i, item in enumerate(val):
+                    if isinstance(item, dict):
+                        item_ctx = dict(item)
+                    else:
+                        item_ctx = {}
+                    item_ctx["@index"] = i
+                    item_ctx["@first"] = (i == 0)
+                    item_ctx["@last"] = (i == len(val) - 1)
+                    item_ctx["."] = item
+                    result.append(render(inner, item_ctx))
+            elif isinstance(val, dict):
+                keys = list(val.keys())
+                for i, k in enumerate(keys):
+                    item = val[k]
+                    if isinstance(item, dict):
+                        item_ctx = dict(item)
+                    else:
+                        item_ctx = {}
+                    item_ctx["@key"] = k
+                    item_ctx["@index"] = i
+                    item_ctx["@first"] = (i == 0)
+                    item_ctx["@last"] = (i == len(keys) - 1)
+                    item_ctx["."] = item
+                    result.append(render(inner, item_ctx))
+            return "".join(result)
+
+        tmpl = re.sub(
+            r"\{\{#each\s+(\w+)\}\}(.*?)\{\{/each\}\}",
+            each_replace,
+            tmpl,
+            flags=re.DOTALL
+        )
+
+        # Process sections: {{#key}}...{{/key}}
+        def section_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            if isinstance(val, list):
+                result = []
+                for i, item in enumerate(val):
+                    if isinstance(item, dict):
+                        item_ctx = dict(item)
+                    else:
+                        item_ctx = {"_value": item}
+                    item_ctx["@index"] = i
+                    item_ctx["@first"] = (i == 0)
+                    item_ctx["@last"] = (i == len(val) - 1)
+                    item_ctx["."] = item
+                    result.append(render(inner, item_ctx))
+                return "".join(result)
+            if val:
+                new_ctx = val if isinstance(val, dict) else ctx
+                return render(inner, new_ctx)
+            return ""
+
+        # Process inverted sections: {{^key}}...{{/key}}
+        def inverted_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            if not val or (isinstance(val, list) and len(val) == 0):
+                return render(inner, ctx)
+            return ""
+
+        # Process sections first (innermost first via non-greedy)
+        tmpl = re.sub(
+            r"\{\{#(@?\w+)\}\}(.*?)\{\{/\1\}\}",
+            section_replace,
+            tmpl,
+            flags=re.DOTALL
+        )
+        tmpl = re.sub(
+            r"\{\{\^(@?\w+)\}\}(.*?)\{\{/\1\}\}",
+            inverted_replace,
+            tmpl,
+            flags=re.DOTALL
+        )
+
+        # Process variables
+        def var_replace(match):
+            key = match.group(1).strip()
+            val = lookup(key, ctx)
+            # Handle special "." lookup for non-dict items in lists
+            if key == "." and "." in ctx:
+                return str(ctx["."])
+            return str(val)
+        tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
+
+        return tmpl
+
+    return render(template, variables)
+
+
+# === MODEL/PROVIDER CONFIGURATION ===
+
+
+def parse_model_string(model_str):
+    if model_str == "test":
+        return "test", None
+    parts = model_str.split("/", 1)
+    if len(parts) == 1:
+        return None, parts[0]
+    return parts[0], parts[1]
+
+
+def get_base_url():
+    return os.environ.get("OPENAI_BASE_URL") or os.environ.get("BASE_URL")
+
+
+def get_provider_config(provider, base_url=None):
+    if base_url:
+        url = base_url.rstrip("/") + "/chat/completions"
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        log("Using custom base URL: %s" % url)
+        return url, api_key
+    if provider not in PROVIDERS:
+        print("Unknown provider: %s" % provider, file=sys.stderr)
+        sys.exit(1)
+    config = PROVIDERS[provider]
+    api_key = os.environ.get(config["env"])
+    if not api_key:
+        print("Missing API key: %s" % config["env"], file=sys.stderr)
+        sys.exit(1)
+    return config["url"], api_key
+
+
+# === API REQUEST/RESPONSE ===
+
+
+def make_request(url, api_key, model, messages, output_config, provider, tools=None):
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if provider == "anthropic":
+        headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+    else:
+        headers["Authorization"] = "Bearer %s" % api_key
+    if provider == "anthropic":
+        # Convert messages to Anthropic format
+        system_content = None
+        anthropic_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_content = msg["content"]
+            else:
+                anthropic_messages.append(msg)
+        body = {
+            "model": model,
+            "max_tokens": 4096,
+            "messages": anthropic_messages,
+        }
+        if system_content:
+            body["system"] = system_content
+        all_tools = []
+        if output_config and output_config.get("schema"):
+            tool = build_schema_tool(output_config["schema"])
+            all_tools.append({
+                "name": tool["function"]["name"],
+                "description": tool["function"]["description"],
+                "input_schema": tool["function"]["parameters"],
+            })
+        if tools:
+            for tool_info in tools.values():
+                schema = tool_info["schema"]
+                all_tools.append({
+                    "name": schema["function"]["name"],
+                    "description": schema["function"]["description"],
+                    "input_schema": schema["function"]["parameters"],
+                })
+        if all_tools:
+            body["tools"] = all_tools
+            if output_config and output_config.get("schema") and not tools:
+                body["tool_choice"] = {"type": "tool", "name": "extract"}
+    else:
+        body = {
+            "model": model,
+            "messages": messages,
+        }
+        all_tools = []
+        if output_config and output_config.get("schema"):
+            all_tools.append(build_schema_tool(output_config["schema"]))
+        if tools:
+            for tool_info in tools.values():
+                all_tools.append(tool_info["schema"])
+        if all_tools:
+            body["tools"] = all_tools
+            if output_config and output_config.get("schema") and not tools:
+                body["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": "extract"}
+                }
+    data = json.dumps(body).encode("utf-8")
+    log("Request URL: %s" % url)
+    log("Request body: %s" % json.dumps(body, indent=2))
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            response_body = resp.read().decode("utf-8")
+            log("Response: %s" % response_body)
+            return json.loads(response_body)
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
+        log("Error response: %s" % error_body)
+        message = extract_error_message(error_body)
+        print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
+        sys.exit(1)
+
+
+def extract_response(response, output_config, provider):
+    if provider == "anthropic":
+        content = response.get("content", [])
+        for block in content:
+            if block.get("type") == "tool_use":
+                if block.get("name") == "extract":
+                    return json.dumps(block.get("input", {}), indent=2)
+            if block.get("type") == "text":
+                return block.get("text", "")
+        return ""
+    else:
+        choices = response.get("choices", [])
+        if not choices:
+            return ""
+        message = choices[0].get("message", {})
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            for tc in tool_calls:
+                if tc.get("function", {}).get("name") == "extract":
+                    return tc.get("function", {}).get("arguments", "{}")
+            return tool_calls[0].get("function", {}).get("arguments", "{}")
+        return message.get("content", "")
+
+
+def extract_text_content(response, provider):
+    if provider == "anthropic":
+        content = response.get("content", [])
+        texts = []
+        for block in content:
+            if block.get("type") == "text":
+                texts.append(block.get("text", ""))
+        return "".join(texts)
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            return message.get("content", "") or ""
+        return ""
+
+
+def extract_tool_calls(response, provider):
+    tool_calls = []
+    if provider == "anthropic":
+        content = response.get("content", [])
+        for block in content:
+            if block.get("type") == "tool_use":
+                tool_calls.append({
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "arguments": block.get("input", {}),
+                })
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            for tc in message.get("tool_calls", []):
+                args_str = tc.get("function", {}).get("arguments", "{}")
+                try:
+                    args = json.loads(args_str)
+                except ValueError:
+                    args = {}
+                tool_calls.append({
+                    "id": tc.get("id", ""),
+                    "name": tc.get("function", {}).get("name", ""),
+                    "arguments": args,
+                })
+    return tool_calls
+
+
+def extract_error_message(error_body):
+    try:
+        data = json.loads(error_body)
+        if "error" in data:
+            err = data["error"]
+            if isinstance(err, dict):
+                err_type = err.get("type", "")
+                message = err.get("message", "")
+                if err_type and message:
+                    return "%s: %s" % (err_type, message)
+                if message:
+                    return message
+                if err_type:
+                    return err_type
+            if isinstance(err, str):
+                return err
+        if "message" in data:
+            return data["message"]
+    except ValueError:
+        pass
+    return error_body
+
+
+def build_assistant_message(response, provider):
+    if provider == "anthropic":
+        return {
+            "role": "assistant",
+            "content": response.get("content", []),
+        }
+    else:
+        choices = response.get("choices", [])
+        if choices:
+            return choices[0].get("message", {"role": "assistant", "content": ""})
+        return {"role": "assistant", "content": ""}
+
+
+def build_tool_result_message(tool_call, result, error, provider):
+    if provider == "anthropic":
+        if error:
+            content = json.dumps({"error": error})
+        else:
+            content = json.dumps(result) if not isinstance(result, str) else result
+        return {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": content,
+            }]
+        }
+    else:
+        if error:
+            content = json.dumps({"error": error})
+        else:
+            content = json.dumps(result) if not isinstance(result, str) else result
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call["id"],
+            "content": content,
+        }
+
+
+# === TOOL LOADING & SCHEMA ===
+
+
+def load_tools(tool_specs, search_paths):
+    tools = {}  # name -> {"schema": ..., "func": ...}
+    for spec in tool_specs:
+        if spec.endswith(".*"):
+            # Import all functions from module
+            module_name = spec[:-2]
+            try:
+                module = load_module_from_path(module_name, search_paths)
+                if module is None:
+                    raise ImportError("No module named '%s'" % module_name)
+                for name in dir(module):
+                    if name.startswith("_"):
+                        continue
+                    obj = getattr(module, name)
+                    if callable(obj) and inspect.getdoc(obj):
+                        schema = function_to_tool_schema(obj)
+                        if schema:
+                            tools[name] = {"schema": schema, "func": obj}
+                            log("Loaded tool: %s from %s" % (name, module_name))
+            except Exception as e:
+                print("Warning: Could not import tool '%s': %s" % (spec, e),
+                      file=sys.stderr)
+        else:
+            # Import specific function
+            parts = spec.rsplit(".", 1)
+            if len(parts) != 2:
+                print("Warning: Invalid tool spec '%s'" % spec, file=sys.stderr)
+                continue
+            module_name, func_name = parts
+            try:
+                module = load_module_from_path(module_name, search_paths)
+                if module is None:
+                    raise ImportError("No module named '%s'" % module_name)
+                if not hasattr(module, func_name):
+                    raise AttributeError("Module '%s' has no function '%s'" %
+                                         (module_name, func_name))
+                func = getattr(module, func_name)
+                if not callable(func):
+                    raise TypeError("'%s' is not callable" % func_name)
+                schema = function_to_tool_schema(func)
+                if schema:
+                    tools[func_name] = {"schema": schema, "func": func}
+                    log("Loaded tool: %s from %s" % (func_name, module_name))
+                else:
+                    print("Warning: Function '%s' has no docstring" % func_name,
+                          file=sys.stderr)
+            except Exception as e:
+                print("Warning: Could not import tool '%s': %s" % (spec, e),
+                      file=sys.stderr)
+    return tools
+
+
+def load_module_from_path(module_name, search_paths):
+    for base_path in search_paths:
+        # Try as a direct file
+        file_path = os.path.join(base_path, module_name + ".py")
+        if os.path.exists(file_path):
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+        # Try as a package path (e.g., package.submodule -> package/submodule.py)
+        parts = module_name.split(".")
+        if len(parts) > 1:
+            file_path = os.path.join(base_path, *parts[:-1], parts[-1] + ".py")
+            if os.path.exists(file_path):
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                return module
+            # Also try package/submodule/__init__.py style
+            file_path = os.path.join(base_path, *parts, "__init__.py")
+            if os.path.exists(file_path):
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                return module
+    return None
+
+
+def function_to_tool_schema(func):
+    doc = inspect.getdoc(func)
+    if not doc:
+        return None
+    sig = inspect.signature(func)
+    properties = {}
+    required = []
+    for param_name, param in sig.parameters.items():
+        if param_name in ("self", "cls"):
+            continue
+        param_type = param.annotation
+        if param_type is inspect.Parameter.empty:
+            param_type = None
+        json_type = python_type_to_json_type(param_type)
+        properties[param_name] = {"type": json_type}
+        if param.default is inspect.Parameter.empty:
+            required.append(param_name)
+    return {
+        "type": "function",
+        "function": {
+            "name": func.__name__,
+            "description": doc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+def python_type_to_json_type(py_type):
+    if py_type is None:
+        return "string"
+    type_name = getattr(py_type, "__name__", str(py_type))
+    mapping = {
+        "str": "string",
+        "int": "integer",
+        "float": "number",
+        "bool": "boolean",
+        "list": "array",
+        "dict": "object",
+    }
+    return mapping.get(type_name, "string")
+
+
+def build_schema_tool(schema):
+    properties = {}
+    required = []
+    for key, value in schema.items():
+        clean_key = key.rstrip("?")
+        is_optional = key.endswith("?")
+        parts = value.split(",", 1) if isinstance(value, str) else [value]
+        type_str = parts[0].strip() if parts else "string"
+        description = parts[1].strip() if len(parts) > 1 else ""
+        json_type = "string"
+        if type_str == "number":
+            json_type = "number"
+        elif type_str == "boolean":
+            json_type = "boolean"
+        prop = {"type": json_type}
+        if description:
+            prop["description"] = description
+        properties[clean_key] = prop
+        if not is_optional:
+            required.append(clean_key)
+    return {
+        "type": "function",
+        "function": {
+            "name": "extract",
+            "description": "Extract structured data",
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+# === TOOL EXECUTION & USER INTERACTION ===
+
+
+def execute_tool(tool_func, args):
+    try:
+        result = tool_func(**args)
+        return result, None
+    except Exception as e:
+        error_msg = "%s: %s" % (type(e).__name__, str(e))
+        return None, error_msg
+
+
+def prompt_user_for_tool(tool_name, args):
+    while True:
+        response = read_tty_line("Run this tool? [Y/n]: ")
+        if response is None:
+            return True
+        if response == "" or response.lower() in ("y", "yes"):
+            return True
+        if response.lower() in ("n", "no"):
+            return False
+        print("Please enter 'y' or 'n'", file=sys.stderr)
+
+
+def is_tool_safe(tool_func):
+    return getattr(tool_func, 'safe', False)
+
+
+def print_tool_call(tool_name, args):
+    summary = format_tool_call_summary(tool_name, args)
+    print("%s%s%s" % (YELLOW, summary, RESET), file=sys.stderr)
+
+
+def format_tool_call_summary(tool_name, args):
+    if not args:
+        return "Tool: %s()" % tool_name
+    arg_parts = []
+    for k, v in args.items():
+        if isinstance(v, str):
+            truncated = truncate_value(v, 30)
+            arg_parts.append('%s="%s"' % (k, truncated))
+        else:
+            arg_parts.append("%s=%s" % (k, truncate_value(v, 30)))
+    args_str = ", ".join(arg_parts)
+    if len(args_str) > 60:
+        args_str = args_str[:57] + "..."
+    return "Tool: %s(%s)" % (tool_name, args_str)
+
+
+def truncate_value(value, max_len=50):
+    s = str(value)
+    if len(s) <= max_len:
+        return s
+    return s[:max_len - 3] + "..."
+
+
+def read_tty_line(prompt_text):
+    # If stdin is a tty (e.g. running in a pty for testing), read from it directly
+    if sys.stdin.isatty():
+        sys.stderr.write(prompt_text)
+        sys.stderr.flush()
+        return sys.stdin.readline().strip()
+    # Try /dev/tty for interactive input when stdin is a pipe
+    try:
+        tty = open("/dev/tty", "r")
+        sys.stderr.write(prompt_text)
+        sys.stderr.flush()
+        response = tty.readline().strip()
+        tty.close()
+        return response
+    except (IOError, OSError):
+        pass
+    # No input available
+    return None
+
+
+# === CACHING ===
+
+
+def cache_key(rendered_prompt, effective_meta):
+    data = json.dumps({
+        "prompt": rendered_prompt,
+        "meta": effective_meta,
+    }, sort_keys=True)
+    return hashlib.sha256(data.encode()).hexdigest()
+
+
+def cache_get(key):
+    cache_dir = get_cache_dir()
+    cache_file = os.path.join(cache_dir, "%s.json" % key)
+    if os.path.exists(cache_file):
+        log("Cache hit: %s" % cache_file)
+        with open(cache_file, "r") as f:
+            return json.load(f)
+    log("Cache miss")
+    return None
+
+
+def cache_set(key, response, provider):
+    cache_dir = get_cache_dir()
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+    cache_file = os.path.join(cache_dir, "%s.json" % key)
+    response_with_provider = {"_provider": provider}
+    response_with_provider.update(response)
+    with open(cache_file, "w") as f:
+        json.dump(response_with_provider, f, indent=2)
+    log("Cached response: %s" % cache_file)
+
+
+def clear_cache():
+    cache_dir = get_cache_dir()
+    if not os.path.exists(cache_dir):
+        print("Cache directory does not exist: %s" % cache_dir)
+        return
+    count = 0
+    for filename in os.listdir(cache_dir):
+        if filename.endswith(".json"):
+            os.remove(os.path.join(cache_dir, filename))
+            count += 1
+    print("Cleared %d cached response(s) from %s" % (count, cache_dir))
+
+
+def get_cache_dir():
+    if os.environ.get("RUNPROMPT_CACHE_DIR"):
+        return os.environ["RUNPROMPT_CACHE_DIR"]
+    xdg_cache = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    return os.path.join(xdg_cache, "runprompt")
+
+
+# === TEST/DEBUG UTILITIES ===
+
+
+def load_test_response(prompt_path):
+    test_file = prompt_path + ".test-response"
+    if not os.path.exists(test_file):
+        print("Test response file not found: %s" % test_file, file=sys.stderr)
+        sys.exit(1)
+    with open(test_file, "r") as f:
+        content = f.read()
+    log("Loaded test response from: %s" % test_file)
+    return json.loads(content)
+
+
+def save_response(response, provider, save_path):
+    response_with_provider = {"_provider": provider}
+    response_with_provider.update(response)
+    with open(save_path, "w") as f:
+        json.dump(response_with_provider, f, indent=2)
+    log("Saved response to: %s" % save_path)
+
+
+def log(msg):
+    if VERBOSE:
+        print(msg, file=sys.stderr)
 
 
 if __name__ == "__main__":
