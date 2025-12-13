@@ -1,4 +1,4 @@
 ---
 model: openai/gpt-4o
 ---
-Process these args: {{ARGS}}
+ARGS: {{ARGS}}

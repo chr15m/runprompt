@@ -79,21 +79,39 @@ def main():
     args_str = " ".join(extra_args)
     log("Extra args: %s" % args_str)
 
-    raw_input = read_stdin()
-    variables = {"STDIN": raw_input or "", "ARGS": args_str}
-    if raw_input:
+    raw_stdin = read_stdin()
+    variables = {"STDIN": raw_stdin or "", "ARGS": args_str}
+    # Determine INPUT: prefer STDIN if provided, otherwise use ARGS
+    if raw_stdin:
+        variables["INPUT"] = raw_stdin
+    else:
+        variables["INPUT"] = args_str
+    # Parse STDIN as JSON if provided
+    if raw_stdin:
         try:
-            parsed = json.loads(raw_input)
+            parsed = json.loads(raw_stdin)
             variables.update(parsed)
-            log("Parsed input as JSON")
+            log("Parsed STDIN as JSON")
         except ValueError:
-            log("Input is not JSON, treating as raw string")
+            log("STDIN is not JSON, treating as raw string")
             input_schema = meta.get("input", {}).get("schema", {})
             if input_schema:
                 first_key = list(input_schema.keys())[0]
-                variables[first_key] = raw_input
+                variables[first_key] = raw_stdin
             else:
-                variables["input"] = raw_input
+                variables["input"] = raw_stdin
+    # Parse ARGS as JSON if provided (and no STDIN to avoid conflicts)
+    elif args_str:
+        try:
+            parsed = json.loads(args_str)
+            variables.update(parsed)
+            log("Parsed ARGS as JSON")
+        except ValueError:
+            log("ARGS is not JSON, treating as raw string")
+            input_schema = meta.get("input", {}).get("schema", {})
+            if input_schema:
+                first_key = list(input_schema.keys())[0]
+                variables[first_key] = args_str
     prompt = render_template(template, variables)
     log("Rendered prompt: %s" % prompt)
     output_config = meta.get("output", {})
