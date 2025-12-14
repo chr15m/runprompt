@@ -295,9 +295,13 @@ Templates use a useful subset of [Handlebars/Mustache syntax](https://google.git
 
 - Variable interpolation: `{{variableName}}`, `{{object.property}}`
 - Comments: `{{! this is a comment }}`
+- Conditionals: `{{#if key}}...{{/if}}`, `{{#if key}}...{{else}}...{{/if}}`
+- Negated conditionals: `{{#unless key}}...{{/unless}}`, `{{#unless key}}...{{else}}...{{/unless}}`
 - Iteration: `{{#each items}}...{{/each}}` with `@index`, `@first`, `@last`, `@key`
 - Sections: `{{#key}}...{{/key}}` (renders if truthy)
 - Inverted sections: `{{^key}}...{{/key}}` (renders if falsy)
+
+Falsy values: `false`, `0`, `""` (empty string), `[]` (empty list), missing/undefined variables.
 
 ## Configuration
 
@@ -386,7 +390,6 @@ See `--help` for more information.
 This is a minimal implementation of the [Dotprompt specification](https://google.github.io/dotprompt/). Not yet supported:
 
 - Multi-message prompts (`{{role}}`, `{{history}}`)
-- Conditionals (`{{#if}}`, `{{#unless}}`, `{{else}}`)
 - Helpers (`{{json}}`, `{{media}}`, `{{section}}`)
 - Model config (`temperature`, `maxOutputTokens`, etc.)
 - Partials (`{{>partialName}}`)

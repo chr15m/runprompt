@@ -607,6 +607,85 @@ def render_template(template, variables):
                 return render(inner, ctx)
             return ""
 
+        # Process {{#if key}}...{{else}}...{{/if}} and {{#if key}}...{{/if}}
+        # Process innermost first by looping until no more matches
+        def if_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            is_truthy = bool(val) and val != "" and \
+                not (isinstance(val, list) and len(val) == 0)
+            # Check for {{else}} - but only top-level else, not nested ones
+            # Find {{else}} that's not inside another {{#if}}
+            depth = 0
+            else_pos = None
+            i = 0
+            while i < len(inner):
+                if inner[i:].startswith("{{#if"):
+                    depth += 1
+                elif inner[i:].startswith("{{/if}}"):
+                    depth -= 1
+                elif inner[i:].startswith("{{else}}") and depth == 0:
+                    else_pos = i
+                    break
+                i += 1
+            if else_pos is not None:
+                if is_truthy:
+                    return inner[:else_pos]
+                else:
+                    return inner[else_pos + 8:]  # len("{{else}}") == 8
+            if is_truthy:
+                return inner
+            return ""
+
+        # Process {{#unless key}}...{{else}}...{{/unless}}
+        def unless_replace(match):
+            key = match.group(1)
+            inner = match.group(2)
+            val = lookup(key, ctx)
+            is_truthy = bool(val) and val != "" and \
+                not (isinstance(val, list) and len(val) == 0)
+            # Find {{else}} that's not inside another {{#unless}}
+            depth = 0
+            else_pos = None
+            i = 0
+            while i < len(inner):
+                if inner[i:].startswith("{{#unless"):
+                    depth += 1
+                elif inner[i:].startswith("{{/unless}}"):
+                    depth -= 1
+                elif inner[i:].startswith("{{else}}") and depth == 0:
+                    else_pos = i
+                    break
+                i += 1
+            if else_pos is not None:
+                if not is_truthy:
+                    return inner[:else_pos]
+                else:
+                    return inner[else_pos + 8:]
+            if not is_truthy:
+                return inner
+            return ""
+
+        # Process if/unless in a single loop to handle mixed nesting
+        if_pattern = re.compile(
+            r"\{\{#if\s+([\w.]+)\}\}((?:(?!\{\{#if)(?!\{\{/if\}\})(?!\{\{#unless)(?!\{\{/unless\}\}).)*?)\{\{/if\}\}",
+            re.DOTALL
+        )
+        unless_pattern = re.compile(
+            r"\{\{#unless\s+([\w.]+)\}\}((?:(?!\{\{#if)(?!\{\{/if\}\})(?!\{\{#unless)(?!\{\{/unless\}\}).)*?)\{\{/unless\}\}",
+            re.DOTALL
+        )
+        while True:
+            if_match = if_pattern.search(tmpl)
+            unless_match = unless_pattern.search(tmpl)
+            if not if_match and not unless_match:
+                break
+            if if_match and (not unless_match or if_match.start() < unless_match.start()):
+                tmpl = if_pattern.sub(if_replace, tmpl, count=1)
+            else:
+                tmpl = unless_pattern.sub(unless_replace, tmpl, count=1)
+
         # Process sections first (innermost first via non-greedy)
         tmpl = re.sub(
             r"\{\{#(@?\w+)\}\}(.*?)\{\{/\1\}\}",

@@ -109,6 +109,119 @@ def test_loop_variables():
          {"items": ["x"]}, "FL")
 
 
+def test_if_conditional():
+    print("\n--- {{#if}} conditional ---")
+    test("if truthy", "{{#if show}}yes{{/if}}", {"show": True}, "yes")
+    test("if falsy false", "{{#if show}}yes{{/if}}", {"show": False}, "")
+    test("if falsy empty string", "{{#if show}}yes{{/if}}", {"show": ""}, "")
+    test("if falsy zero", "{{#if show}}yes{{/if}}", {"show": 0}, "")
+    test("if falsy empty list", "{{#if items}}yes{{/if}}", {"items": []}, "")
+    test("if missing", "{{#if show}}yes{{/if}}", {}, "")
+    test("if truthy string", "{{#if name}}Hello {{name}}{{/if}}", 
+         {"name": "World"}, "Hello World")
+    test("if truthy number", "{{#if count}}Count: {{count}}{{/if}}", 
+         {"count": 42}, "Count: 42")
+    test("if truthy list", "{{#if items}}has items{{/if}}", 
+         {"items": [1, 2]}, "has items")
+    # if with else
+    test("if else truthy", "{{#if show}}yes{{else}}no{{/if}}", 
+         {"show": True}, "yes")
+    test("if else falsy", "{{#if show}}yes{{else}}no{{/if}}", 
+         {"show": False}, "no")
+    test("if else empty string", "{{#if name}}Hello {{name}}{{else}}Hello stranger{{/if}}", 
+         {"name": ""}, "Hello stranger")
+    test("if else missing", "{{#if name}}Hello {{name}}{{else}}Hello stranger{{/if}}", 
+         {}, "Hello stranger")
+    test("if else with value", "{{#if name}}Hello {{name}}{{else}}Hello stranger{{/if}}", 
+         {"name": "Alice"}, "Hello Alice")
+
+
+def test_unless_conditional():
+    print("\n--- {{#unless}} conditional ---")
+    test("unless truthy", "{{#unless show}}yes{{/unless}}", {"show": True}, "")
+    test("unless falsy", "{{#unless show}}yes{{/unless}}", {"show": False}, "yes")
+    test("unless empty string", "{{#unless show}}yes{{/unless}}", {"show": ""}, "yes")
+    test("unless missing", "{{#unless show}}yes{{/unless}}", {}, "yes")
+    test("unless empty list", "{{#unless items}}no items{{/unless}}", 
+         {"items": []}, "no items")
+    test("unless non-empty list", "{{#unless items}}no items{{/unless}}", 
+         {"items": [1]}, "")
+    # unless with else
+    test("unless else truthy", "{{#unless show}}no{{else}}yes{{/unless}}", 
+         {"show": True}, "yes")
+    test("unless else falsy", "{{#unless show}}no{{else}}yes{{/unless}}", 
+         {"show": False}, "no")
+    test("unless else missing", "{{#unless name}}Anonymous{{else}}{{name}}{{/unless}}", 
+         {}, "Anonymous")
+    test("unless else with value", "{{#unless name}}Anonymous{{else}}{{name}}{{/unless}}", 
+         {"name": "Bob"}, "Bob")
+
+
+def test_dot_notation_conditionals():
+    print("\n--- Dot notation in conditionals ---")
+    test("if with dot notation truthy", 
+         "{{#if user.active}}active{{/if}}", 
+         {"user": {"active": True}}, "active")
+    test("if with dot notation falsy", 
+         "{{#if user.active}}active{{/if}}", 
+         {"user": {"active": False}}, "")
+    test("if with dot notation missing", 
+         "{{#if user.active}}active{{/if}}", 
+         {"user": {}}, "")
+    test("if else with dot notation", 
+         "{{#if user.name}}Hello {{user.name}}{{else}}Hello guest{{/if}}", 
+         {"user": {"name": "Alice"}}, "Hello Alice")
+    test("if else with dot notation missing", 
+         "{{#if user.name}}Hello {{user.name}}{{else}}Hello guest{{/if}}", 
+         {"user": {}}, "Hello guest")
+    test("unless with dot notation", 
+         "{{#unless user.banned}}welcome{{/unless}}", 
+         {"user": {"banned": False}}, "welcome")
+    test("deep dot notation in if", 
+         "{{#if a.b.c}}deep{{/if}}", 
+         {"a": {"b": {"c": True}}}, "deep")
+
+
+def test_nested_conditionals():
+    print("\n--- Nested conditionals ---")
+    # Nested if
+    test("nested if both true", 
+         "{{#if a}}{{#if b}}both{{/if}}{{/if}}", 
+         {"a": True, "b": True}, "both")
+    test("nested if outer true inner false", 
+         "{{#if a}}{{#if b}}both{{else}}only a{{/if}}{{/if}}", 
+         {"a": True, "b": False}, "only a")
+    test("nested if outer false", 
+         "{{#if a}}{{#if b}}both{{/if}}{{else}}none{{/if}}", 
+         {"a": False, "b": True}, "none")
+    # if inside unless
+    test("if inside unless", 
+         "{{#unless a}}{{#if b}}b only{{/if}}{{/unless}}", 
+         {"a": False, "b": True}, "b only")
+    # unless inside if
+    test("unless inside if", 
+         "{{#if a}}{{#unless b}}a not b{{/unless}}{{/if}}", 
+         {"a": True, "b": False}, "a not b")
+    # Triple nesting
+    test("triple nested", 
+         "{{#if a}}{{#if b}}{{#if c}}all{{/if}}{{/if}}{{/if}}", 
+         {"a": True, "b": True, "c": True}, "all")
+    # Mixed nesting: if with else inside unless
+    test("if else inside unless", 
+         "{{#unless a}}{{#if b}}yes{{else}}no{{/if}}{{/unless}}", 
+         {"a": False, "b": True}, "yes")
+    test("if else inside unless falsy", 
+         "{{#unless a}}{{#if b}}yes{{else}}no{{/if}}{{/unless}}", 
+         {"a": False, "b": False}, "no")
+    # Mixed nesting: unless with else inside if
+    test("unless else inside if", 
+         "{{#if a}}{{#unless b}}not b{{else}}has b{{/unless}}{{/if}}", 
+         {"a": True, "b": False}, "not b")
+    test("unless else inside if truthy", 
+         "{{#if a}}{{#unless b}}not b{{else}}has b{{/unless}}{{/if}}", 
+         {"a": True, "b": True}, "has b")
+
+
 def test_each_helper():
     print("\n--- {{#each}} helper ---")
     # each with list
@@ -141,6 +254,10 @@ def main():
     test_combined()
     test_comments()
     test_loop_variables()
+    test_if_conditional()
+    test_unless_conditional()
+    test_dot_notation_conditionals()
+    test_nested_conditionals()
     test_each_helper()
 
     print("\n" + "=" * 40)
