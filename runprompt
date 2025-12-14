@@ -42,25 +42,23 @@ VERBOSE = False
 
 def main():
     global VERBOSE
-    verbose, save_response_path, arg_base_url, use_cache, clear_cache_flag, \
-        safe_yes, tool_paths, arg_overrides, remaining = parse_args(sys.argv[1:])
-    VERBOSE = verbose
+    args = parse_args(sys.argv[1:])
+    VERBOSE = args.verbose
 
-    if clear_cache_flag:
+    if args.clear_cache:
         clear_cache()
         sys.exit(0)
 
-    if os.environ.get("RUNPROMPT_CACHE") == "1":
-        use_cache = True
+    use_cache = args.cache or os.environ.get("RUNPROMPT_CACHE") == "1"
 
-    if len(remaining) < 1:
+    if len(args.remaining) < 1:
         print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
         print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
-    prompt_path = remaining[0]
+    prompt_path = args.remaining[0]
     meta, template = parse_prompt_file(prompt_path)
     meta = apply_overrides(meta)
-    for key, value in arg_overrides.items():
+    for key, value in args.overrides.items():
         log("Override from arg --%s: %s" % (key, value))
         if key == "tools" and isinstance(value, str):
             # Parse comma-separated tools
@@ -76,7 +74,7 @@ def main():
         print("No provider in model string", file=sys.stderr)
         sys.exit(1)
     # Collect extra args after prompt file
-    extra_args = remaining[1:] if len(remaining) > 1 else []
+    extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
     args_str = " ".join(extra_args)
     log("Extra args: %s" % args_str)
 
@@ -123,7 +121,7 @@ def main():
     prompt_dir = os.path.dirname(os.path.abspath(prompt_path))
     if prompt_dir not in search_paths:
         search_paths.append(prompt_dir)
-    for tp in tool_paths:
+    for tp in args.tool_path:
         abs_tp = os.path.abspath(tp)
         if abs_tp not in search_paths:
             search_paths.append(abs_tp)
@@ -145,7 +143,7 @@ def main():
         print(result)
         return
 
-    base_url = arg_base_url or get_base_url()
+    base_url = args.base_url or get_base_url()
     if base_url:
         url, api_key = get_provider_config(provider, base_url)
         effective_provider = "openai"
@@ -191,8 +189,8 @@ def main():
             # No more tool calls, we're done
             if use_cache and key:
                 cache_set(key, response, effective_provider)
-            if save_response_path:
-                save_response(response, effective_provider, save_response_path)
+            if args.save_response:
+                save_response(response, effective_provider, args.save_response)
             # If there was an extract tool call, output that
             for tc in tool_calls:
                 if tc["name"] == "extract":
@@ -227,7 +225,7 @@ def main():
             print_tool_call(tool_name, tool_args)
 
             # Check if --safe-yes is enabled and tool is safe
-            if safe_yes and is_tool_safe(tool_func):
+            if args.safe_yes and is_tool_safe(tool_func):
                 log("Auto-approving safe tool: %s" % tool_name)
                 approved = True
             else:
@@ -311,28 +309,26 @@ def parse_args(args):
                         help="Use custom OpenAI-compatible endpoint")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
-    known, unknown = parser.parse_known_args(args)
+    parsed, unknown = parser.parse_known_args(args)
     # Parse unknown args for --key=value overrides and extra positional args
-    overrides = {}
-    remaining = []
+    parsed.overrides = {}
+    parsed.remaining = []
     i = 0
     while i < len(unknown):
         arg = unknown[i]
         if arg.startswith("--"):
             if "=" in arg:
                 key, val = arg[2:].split("=", 1)
-                overrides[key] = parse_yaml_value(val)
+                parsed.overrides[key] = parse_yaml_value(val)
             elif i + 1 < len(unknown) and not unknown[i + 1].startswith("-"):
-                overrides[arg[2:]] = parse_yaml_value(unknown[i + 1])
+                parsed.overrides[arg[2:]] = parse_yaml_value(unknown[i + 1])
                 i += 1
             else:
-                overrides[arg[2:]] = True
+                parsed.overrides[arg[2:]] = True
         else:
-            remaining.append(arg)
+            parsed.remaining.append(arg)
         i += 1
-    return (known.verbose, known.save_response, known.base_url, known.cache,
-            known.clear_cache, known.safe_yes, known.tool_path, overrides,
-            remaining)
+    return parsed
 
 
 def read_stdin():
