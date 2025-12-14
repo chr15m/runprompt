@@ -9,6 +9,7 @@ import urllib.request
 import urllib.error
 import importlib.util
 import inspect
+import argparse
 
 PROVIDERS = {
     "openrouter": {
@@ -249,24 +250,7 @@ def main():
                 tc, result, error, effective_provider))
 
 
-HELP_TEXT = """\
-Usage: runprompt [options] <prompt_file>
-
-Run Dotprompt (.prompt) files from the command line.
-
-Options:
-  -h, --help              Show this help message and exit
-  -v, --verbose           Show request/response details
-  -c, --cache             Enable response caching
-  --clear-cache           Clear the response cache and exit
-  --save-response <file>  Save raw API response to file
-  --base-url <url>        Use custom OpenAI-compatible endpoint
-  --openai-base-url <url> Use custom OpenAI-compatible endpoint
-  --tool-path <path>      Add directory to tool import path (can be repeated)
-  --safe-yes              Auto-approve tool calls for functions marked as safe
-  --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
-  --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
-
+HELP_EPILOG = """\
 Input:
   Pipe JSON to set template variables: echo '{"name": "World"}' | runprompt hello.prompt
   Pipe text for {{STDIN}} variable:    echo "some text" | runprompt summarize.prompt
@@ -302,62 +286,53 @@ Examples:
   runprompt --cache hello.prompt
   runprompt --safe-yes tool_prompt.prompt
   OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
+
+Overrides:
+  --<key>=<value>         Override frontmatter value (e.g. --model=openai/gpt-4o)
+  --<key> <value>         Override frontmatter value (e.g. --model openai/gpt-4o)
 """
 
 def parse_args(args):
-    result = {
-        "verbose": False, "save_response": None, "base_url": None,
-        "cache": False, "clear_cache": False, "safe_yes": False,
-        "tool_paths": [], "overrides": {}, "remaining": []
-    }
+    parser = argparse.ArgumentParser(
+        description="Run Dotprompt (.prompt) files from the command line.",
+        add_help=True, formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=HELP_EPILOG)
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Show request/response details")
+    parser.add_argument("-c", "--cache", action="store_true",
+                        help="Enable response caching")
+    parser.add_argument("--clear-cache", action="store_true",
+                        help="Clear the response cache and exit")
+    parser.add_argument("--safe-yes", action="store_true",
+                        help="Auto-approve tool calls for safe functions")
+    parser.add_argument("--save-response", metavar="FILE",
+                        help="Save raw API response to file")
+    parser.add_argument("--base-url", "--openai-base-url", metavar="URL",
+                        help="Use custom OpenAI-compatible endpoint")
+    parser.add_argument("--tool-path", action="append", default=[],
+                        metavar="PATH", help="Add directory to tool import path")
+    known, unknown = parser.parse_known_args(args)
+    # Parse unknown args for --key=value overrides and extra positional args
+    overrides = {}
+    remaining = []
     i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg in ("-h", "--help"):
-            print(HELP_TEXT)
-            sys.exit(0)
-        elif arg in ("-v", "--verbose"):
-            result["verbose"] = True
-        elif arg in ("-c", "--cache"):
-            result["cache"] = True
-        elif arg == "--clear-cache":
-            result["clear_cache"] = True
-        elif arg == "--safe-yes":
-            result["safe_yes"] = True
-        elif arg in ("--save-response", "--base-url", "--openai-base-url",
-                     "--tool-path") or arg.startswith(
-                         ("--save-response=", "--base-url=",
-                          "--openai-base-url=", "--tool-path=")):
+    while i < len(unknown):
+        arg = unknown[i]
+        if arg.startswith("--"):
             if "=" in arg:
                 key, val = arg[2:].split("=", 1)
-            elif i + 1 < len(args):
-                key, val = arg[2:], args[i + 1]
+                overrides[key] = parse_yaml_value(val)
+            elif i + 1 < len(unknown) and not unknown[i + 1].startswith("-"):
+                overrides[arg[2:]] = parse_yaml_value(unknown[i + 1])
                 i += 1
             else:
-                print("%s requires a value" % arg, file=sys.stderr)
-                sys.exit(1)
-            key = key.replace("-", "_").replace("openai_base_url", "base_url")
-            if key == "tool_path":
-                result["tool_paths"].append(val)
-            else:
-                result[key] = val
-        elif arg.startswith("--"):
-            if "=" in arg:
-                key, val = arg[2:].split("=", 1)
-                result["overrides"][key] = parse_yaml_value(val)
-            else:
-                key = arg[2:]
-                if i + 1 < len(args) and not args[i + 1].startswith("-"):
-                    i += 1
-                    result["overrides"][key] = parse_yaml_value(args[i])
-                else:
-                    result["overrides"][key] = True
+                overrides[arg[2:]] = True
         else:
-            result["remaining"].append(arg)
+            remaining.append(arg)
         i += 1
-    return (result["verbose"], result["save_response"], result["base_url"],
-            result["cache"], result["clear_cache"], result["safe_yes"],
-            result["tool_paths"], result["overrides"], result["remaining"])
+    return (known.verbose, known.save_response, known.base_url, known.cache,
+            known.clear_cache, known.safe_yes, known.tool_path, overrides,
+            remaining)
 
 
 def read_stdin():
