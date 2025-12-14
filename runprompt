@@ -848,11 +848,11 @@ def build_assistant_message(response, provider):
 
 
 def build_tool_result_message(tool_call, result, error, provider):
+    if error:
+        content = json.dumps({"error": error})
+    else:
+        content = json.dumps(result) if not isinstance(result, str) else result
     if provider == "anthropic":
-        if error:
-            content = json.dumps({"error": error})
-        else:
-            content = json.dumps(result) if not isinstance(result, str) else result
         return {
             "role": "user",
             "content": [{
@@ -861,16 +861,11 @@ def build_tool_result_message(tool_call, result, error, provider):
                 "content": content,
             }]
         }
-    else:
-        if error:
-            content = json.dumps({"error": error})
-        else:
-            content = json.dumps(result) if not isinstance(result, str) else result
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call["id"],
-            "content": content,
-        }
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call["id"],
+        "content": content,
+    }
 
 
 # === TOOL LOADING & SCHEMA ===
