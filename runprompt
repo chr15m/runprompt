@@ -585,12 +585,6 @@ def render_template(template, variables):
                 return inner[:else_pos] if is_truthy else inner[else_pos + 8:]
             return inner if is_truthy else ""
 
-        def if_replace(match):
-            return conditional_replace(match, invert=False)
-
-        def unless_replace(match):
-            return conditional_replace(match, invert=True)
-
         # Process if/unless in a single loop to handle mixed nesting
         if_pattern = re.compile(
             r"\{\{#if\s+([\w.]+)\}\}((?:(?!\{\{#if)(?!\{\{/if\}\})(?!\{\{#unless)(?!\{\{/unless\}\}).)*?)\{\{/if\}\}",
@@ -606,9 +600,9 @@ def render_template(template, variables):
             if not if_match and not unless_match:
                 break
             if if_match and (not unless_match or if_match.start() < unless_match.start()):
-                tmpl = if_pattern.sub(if_replace, tmpl, count=1)
+                tmpl = if_pattern.sub(lambda m: conditional_replace(m, False), tmpl, count=1)
             else:
-                tmpl = unless_pattern.sub(unless_replace, tmpl, count=1)
+                tmpl = unless_pattern.sub(lambda m: conditional_replace(m, True), tmpl, count=1)
 
         # Process sections first (innermost first via non-greedy)
         tmpl = re.sub(
@@ -1087,11 +1081,8 @@ def format_tool_call_summary(tool_name, args):
         return "Tool: %s()" % tool_name
     arg_parts = []
     for k, v in args.items():
-        if isinstance(v, str):
-            truncated = truncate_value(v, 30)
-            arg_parts.append('%s="%s"' % (k, truncated))
-        else:
-            arg_parts.append("%s=%s" % (k, truncate_value(v, 30)))
+        q = '"' if isinstance(v, str) else ''
+        arg_parts.append('%s=%s%s%s' % (k, q, truncate_value(v, 30), q))
     args_str = ", ".join(arg_parts)
     if len(args_str) > 60:
         args_str = args_str[:57] + "..."
@@ -1100,9 +1091,7 @@ def format_tool_call_summary(tool_name, args):
 
 def truncate_value(value, max_len=50):
     s = str(value)
-    if len(s) <= max_len:
-        return s
-    return s[:max_len - 3] + "..."
+    return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
 def read_tty_line(prompt_text):
