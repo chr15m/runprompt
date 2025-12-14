@@ -305,74 +305,59 @@ Examples:
 """
 
 def parse_args(args):
-    verbose = False
-    save_response_path = None
-    base_url = None
-    use_cache = False
-    clear_cache_flag = False
-    safe_yes = False
-    tool_paths = []
-    overrides = {}
-    remaining = []
+    result = {
+        "verbose": False, "save_response": None, "base_url": None,
+        "cache": False, "clear_cache": False, "safe_yes": False,
+        "tool_paths": [], "overrides": {}, "remaining": []
+    }
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "-h" or arg == "--help":
+        if arg in ("-h", "--help"):
             print(HELP_TEXT)
             sys.exit(0)
-        elif arg == "-v" or arg == "--verbose":
-            verbose = True
-        elif arg == "-c" or arg == "--cache":
-            use_cache = True
+        elif arg in ("-v", "--verbose"):
+            result["verbose"] = True
+        elif arg in ("-c", "--cache"):
+            result["cache"] = True
         elif arg == "--clear-cache":
-            clear_cache_flag = True
+            result["clear_cache"] = True
         elif arg == "--safe-yes":
-            safe_yes = True
-        elif arg == "--save-response":
-            if i + 1 < len(args):
+            result["safe_yes"] = True
+        elif arg in ("--save-response", "--base-url", "--openai-base-url",
+                     "--tool-path") or arg.startswith(
+                         ("--save-response=", "--base-url=",
+                          "--openai-base-url=", "--tool-path=")):
+            if "=" in arg:
+                key, val = arg[2:].split("=", 1)
+            elif i + 1 < len(args):
+                key, val = arg[2:], args[i + 1]
                 i += 1
-                save_response_path = args[i]
             else:
-                print("--save-response requires a file path", file=sys.stderr)
+                print("%s requires a value" % arg, file=sys.stderr)
                 sys.exit(1)
-        elif arg.startswith("--save-response="):
-            save_response_path = arg[len("--save-response="):]
-        elif arg == "--base-url" or arg == "--openai-base-url":
-            if i + 1 < len(args):
-                i += 1
-                base_url = args[i]
+            key = key.replace("-", "_").replace("openai_base_url", "base_url")
+            if key == "tool_path":
+                result["tool_paths"].append(val)
             else:
-                print("%s requires a URL" % arg, file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith("--base-url="):
-            base_url = arg[len("--base-url="):]
-        elif arg.startswith("--openai-base-url="):
-            base_url = arg[len("--openai-base-url="):]
-        elif arg == "--tool-path":
-            if i + 1 < len(args):
-                i += 1
-                tool_paths.append(args[i])
-            else:
-                print("--tool-path requires a directory path", file=sys.stderr)
-                sys.exit(1)
-        elif arg.startswith("--tool-path="):
-            tool_paths.append(arg[len("--tool-path="):])
+                result[key] = val
         elif arg.startswith("--"):
             if "=" in arg:
-                key, value = arg[2:].split("=", 1)
-                overrides[key] = parse_yaml_value(value)
+                key, val = arg[2:].split("=", 1)
+                result["overrides"][key] = parse_yaml_value(val)
             else:
                 key = arg[2:]
                 if i + 1 < len(args) and not args[i + 1].startswith("-"):
                     i += 1
-                    overrides[key] = parse_yaml_value(args[i])
+                    result["overrides"][key] = parse_yaml_value(args[i])
                 else:
-                    overrides[key] = True
+                    result["overrides"][key] = True
         else:
-            remaining.append(arg)
+            result["remaining"].append(arg)
         i += 1
-    return verbose, save_response_path, base_url, use_cache, clear_cache_flag, \
-        safe_yes, tool_paths, overrides, remaining
+    return (result["verbose"], result["save_response"], result["base_url"],
+            result["cache"], result["clear_cache"], result["safe_yes"],
+            result["tool_paths"], result["overrides"], result["remaining"])
 
 
 def read_stdin():
