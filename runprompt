@@ -929,27 +929,14 @@ def load_tools(tool_specs, search_paths):
 
 
 def load_module_from_path(module_name, search_paths):
+    parts = module_name.split(".")
     for base_path in search_paths:
-        # Try as a direct file
-        file_path = os.path.join(base_path, module_name + ".py")
-        if os.path.exists(file_path):
-            spec = importlib.util.spec_from_file_location(module_name, file_path)
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
-            return module
-        # Try as a package path (e.g., package.submodule -> package/submodule.py)
-        parts = module_name.split(".")
+        # Build list of candidate paths to try
+        candidates = [os.path.join(base_path, module_name + ".py")]
         if len(parts) > 1:
-            file_path = os.path.join(base_path, *parts[:-1], parts[-1] + ".py")
-            if os.path.exists(file_path):
-                spec = importlib.util.spec_from_file_location(module_name, file_path)
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
-                return module
-            # Also try package/submodule/__init__.py style
-            file_path = os.path.join(base_path, *parts, "__init__.py")
+            candidates.append(os.path.join(base_path, *parts[:-1], parts[-1] + ".py"))
+            candidates.append(os.path.join(base_path, *parts, "__init__.py"))
+        for file_path in candidates:
             if os.path.exists(file_path):
                 spec = importlib.util.spec_from_file_location(module_name, file_path)
                 module = importlib.util.module_from_spec(spec)
