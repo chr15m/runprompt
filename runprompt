@@ -243,6 +243,19 @@ def main():
         abs_tp = os.path.abspath(tp)
         if abs_tp not in search_paths:
             search_paths.append(abs_tp)
+    # Add default tool paths from config directories
+    default_tool_dirs = [
+        os.path.join(".", ".runprompt", "tools"),
+        os.path.join(
+            os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+            "runprompt", "tools"
+        ),
+        os.path.join(os.path.expanduser("~"), ".runprompt", "tools"),
+    ]
+    for td in default_tool_dirs:
+        abs_td = os.path.abspath(td)
+        if abs_td not in search_paths and os.path.isdir(abs_td):
+            search_paths.append(abs_td)
     log("Tool search paths: %s" % search_paths)
 
     # Load tools

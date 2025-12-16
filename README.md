@@ -236,7 +236,11 @@ Tools are searched for in:
 
 1. The current working directory
 2. The directory containing the prompt file
-3. Additional paths via `--tool-path`
+3. Additional paths via `--tool-path` or config file
+4. Default config tool directories (if they exist):
+   - `./.runprompt/tools`
+   - `$XDG_CONFIG_HOME/runprompt/tools` (default: `~/.config/runprompt/tools`)
+   - `~/.runprompt/tools`
 
 ```bash
 ./runprompt --tool-path ./my_tools --tool-path /shared/tools prompt.prompt
