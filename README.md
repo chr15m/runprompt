@@ -1,8 +1,8 @@
 # runprompt
 
-A single-file Python script for running [Dotprompt](https://google.github.io/dotprompt/) files.
+Run LLM [.prompt](https://google.github.io/dotprompt/) files from your shell with a single single-file Python script.
 
-[Dotprompt](https://google.github.io/dotprompt/) is an prompt template format for LLMs where a `.prompt` file contains the prompt and metadata (model, schema, config) in a single file.
+[Dotprompt](https://google.github.io/dotprompt/) is an prompt template format for LLMs where a `.prompt` file contains the prompt and metadata (model, schema, config) in a single file. You can use it to run LLM prompts and get structured responses right in your shell.
 
 [Quick start](#quick-start) | [Examples](#examples) | [Tools](#tools) | [Template syntax](#template-syntax) | [Configuration](#configuration) | [Providers](#providers) | [Caching](#caching) | [Spec compliance](#spec-compliance)
 
