@@ -319,10 +319,11 @@ Configuration values can be set from config file, env var or command line flag, 
 | Option | Config file | Environment variable | CLI flag |
 |--------|-------------|---------------------|----------|
 | Model | `model: openai/gpt-4o` | `RUNPROMPT_MODEL` | `--model` |
+| Default model | `default_model: openai/gpt-4o` | `RUNPROMPT_DEFAULT_MODEL` | `--default-model` |
 | Base URL | `base_url: http://...` | `RUNPROMPT_BASE_URL` | `--base-url` |
 | Tool paths | `tool_path: [./tools]` | `RUNPROMPT_TOOL_PATH` | `--tool-path` |
 | Cache | `cache: true` | `RUNPROMPT_CACHE=1` | `--cache` |
-| Cache dir | `cache_dir: /path` | `RUNPROMPT_CACHE_DIR` | - |
+| Cache dir | `cache_dir: /path` | `RUNPROMPT_CACHE_DIR` | `--cache-dir` |
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 
@@ -344,6 +345,7 @@ Priority for API keys: config file, env var, then flag as fallback.
 ```yaml
 # ~/.runprompt/config.yml or ./.runprompt/config.yml
 model: openai/gpt-4o
+default_model: anthropic/claude-sonnet-4-20250514  # fallback if model not set anywhere
 cache: true
 safe_yes: true
 tool_path:
@@ -351,6 +353,8 @@ tool_path:
   - /shared/tools
 openai_api_key: sk-...
 ```
+
+The `default_model` is used as a fallback when no model is specified in the prompt file, config, environment, or CLI. This lets you set a preferred model that's used only when nothing else specifies one.
 
 ### Custom endpoint (Ollama, etc.)
 
