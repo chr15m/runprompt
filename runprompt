@@ -20,9 +20,9 @@ CONFIG = {
 
 # Config keys that support the cascade
 CONFIG_KEYS = {
-    "model", "tool_path", "base_url", "cache", "cache_dir", "safe_yes",
-    "verbose", "anthropic_api_key", "openai_api_key", "google_api_key",
-    "openrouter_api_key",
+    "model", "default_model", "tool_path", "base_url", "cache", "cache_dir",
+    "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
+    "google_api_key", "openrouter_api_key",
 }
 
 PROVIDERS = {
@@ -167,8 +167,11 @@ def main():
     meta, template = parse_prompt_file(prompt_path)
     meta = apply_overrides(meta)
     # Apply model from config cascade if not in frontmatter
-    if not meta.get("model") and get_conf("model"):
-        meta["model"] = get_conf("model")
+    if not meta.get("model"):
+        if get_conf("model"):
+            meta["model"] = get_conf("model")
+        elif get_conf("default_model"):
+            meta["model"] = get_conf("default_model")
     for key, value in args.overrides.items():
         log("Override from arg --%s: %s" % (key, value))
         if key == "tools" and isinstance(value, str):
@@ -449,12 +452,13 @@ def parse_args(args):
         if arg.startswith("--"):
             if "=" in arg:
                 key, val = arg[2:].split("=", 1)
-                parsed.overrides[key] = parse_yaml_value(val)
+                parsed.overrides[normalize_key(key)] = parse_yaml_value(val)
             elif i + 1 < len(unknown) and not unknown[i + 1].startswith("-"):
-                parsed.overrides[arg[2:]] = parse_yaml_value(unknown[i + 1])
+                parsed.overrides[normalize_key(arg[2:])] = parse_yaml_value(
+                    unknown[i + 1])
                 i += 1
             else:
-                parsed.overrides[arg[2:]] = True
+                parsed.overrides[normalize_key(arg[2:])] = True
         else:
             parsed.remaining.append(arg)
         i += 1
