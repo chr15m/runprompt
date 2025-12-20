@@ -235,6 +235,12 @@ def main():
     prompt_dir = os.path.dirname(os.path.abspath(prompt_path))
     if prompt_dir not in search_paths:
         search_paths.append(prompt_dir)
+    # If prompt is a symlink, also add the real file's directory
+    real_prompt_path = os.path.realpath(prompt_path)
+    if real_prompt_path != os.path.abspath(prompt_path):
+        real_prompt_dir = os.path.dirname(real_prompt_path)
+        if real_prompt_dir not in search_paths:
+            search_paths.append(real_prompt_dir)
     # Add tool paths from config cascade
     conf_tool_paths = get_conf("tool_path", [])
     if isinstance(conf_tool_paths, str):
