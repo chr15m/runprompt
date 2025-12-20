@@ -521,6 +521,163 @@ def test_builtin_tool_specific():
         server.shutdown()
 
 
+def test_builtin_write_file_factory():
+    """Test that builtin.write_file('path') creates a parameterized tool."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 11, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 11)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', "--tools=builtin.write_file('test_output.txt')",
+             'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        req = MockHandler.received_requests[0]
+        body = req['body']
+        tools = body.get('tools', [])
+        assert len(tools) == 1, "Expected exactly 1 tool, got %d" % len(tools)
+        func = tools[0]['function']
+        assert func['name'] == 'write_file', \
+            "Expected tool name 'write_file', got '%s'" % func['name']
+        assert 'test_output.txt' in func['description'], \
+            "Expected path in description"
+        # Should have 'content' parameter, not 'path'
+        params = func['parameters']
+        assert 'content' in params['properties'], \
+            "Expected 'content' parameter"
+        assert 'path' not in params['properties'], \
+            "Should not have 'path' parameter"
+    finally:
+        server.shutdown()
+
+
+def test_builtin_write_file_execution():
+    """Test that write_file tool actually writes to the specified file."""
+    import tempfile
+    import shutil
+    # Create a temp directory for the test
+    temp_dir = tempfile.mkdtemp()
+    test_file = os.path.join(temp_dir, 'test_write.txt')
+    try:
+        responses = [
+            # First response: model requests write_file tool call
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_write",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": '{"content": "Hello from LLM!"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            # Second response: model confirms
+            {
+                "choices": [{
+                    "message": {
+                        "content": "I wrote the file for you."
+                    }
+                }]
+            }
+        ]
+        server = start_server(MOCK_PORT + 12, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 12)
+        env['OPENAI_API_KEY'] = 'test-key'
+        # Use pty to provide input and 'y' for tool confirmation
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', "--tools=builtin.write_file('%s')" % test_file,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        # Check file was written
+        assert os.path.exists(test_file), "File should have been created"
+        with open(test_file, 'r') as f:
+            content = f.read()
+        assert content == "Hello from LLM!", \
+            "Expected 'Hello from LLM!', got '%s'" % content
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
+def test_builtin_factory_without_args_warns():
+    """Test that using a factory tool without args shows a warning."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 13, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 13)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--tools=builtin.write_file',
+             'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        assert 'requires arguments' in result.stderr, \
+            "Expected warning about required arguments"
+    finally:
+        server.shutdown()
+
+
+def test_builtin_wildcard_skips_factories():
+    """Test that builtin.* does not include factory tools."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 14, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 14)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--tools=builtin.*', 'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        req = MockHandler.received_requests[0]
+        body = req['body']
+        tools = body.get('tools', [])
+        tool_names = [t['function']['name'] for t in tools]
+        assert 'write_file' not in tool_names, \
+            "Factory tool should not be included in wildcard"
+        assert 'fetch_clean' in tool_names, \
+            "Regular builtin should be included"
+        assert 'calculator' in tool_names, \
+            "Regular builtin should be included"
+    finally:
+        server.shutdown()
+
+
 def test_builtin_tool_unknown():
     """Test that unknown builtin tool shows warning."""
     responses = [
@@ -615,6 +772,10 @@ if __name__ == '__main__':
     test("builtin tool wildcard", test_builtin_tool_wildcard)
     test("builtin tool specific", test_builtin_tool_specific)
     test("builtin tool unknown", test_builtin_tool_unknown)
+    test("builtin write_file factory", test_builtin_write_file_factory)
+    test("builtin write_file execution", test_builtin_write_file_execution)
+    test("builtin factory without args warns", test_builtin_factory_without_args_warns)
+    test("builtin wildcard skips factories", test_builtin_wildcard_skips_factories)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))

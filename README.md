@@ -302,8 +302,24 @@ Available builtin tools:
 |------|-------------|
 | `calculator` | Safely evaluate mathematical expressions (arithmetic, trig, log, etc.) |
 | `fetch_clean` | Fetch a URL and return a lightweight version of the page for LLM consumption |
+| `write_file('path')` | Write content to a specific file (parameterized) |
 
-Both builtin tools are marked as safe (auto-approved with `--safe-yes`).
+The `calculator` and `fetch_clean` tools are marked as safe (auto-approved with `--safe-yes`). The `write_file` tool requires confirmation since it modifies the filesystem.
+
+### Parameterized tools
+
+Some builtin tools are "factories" that take arguments to create a specialized tool:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+tools:
+  - builtin.write_file('output.txt')
+---
+Write a haiku about coding to the file.
+```
+
+The `write_file('output.txt')` creates a tool that can only write to `output.txt`. The LLM provides the content, but cannot choose the path - this is a security feature that limits what files the LLM can modify.
 
 Use `builtin.*` to import all builtin tools, or `builtin.tool_name` for a specific one.
 

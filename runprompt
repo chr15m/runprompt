@@ -1067,20 +1067,59 @@ def load_tools(tool_specs, search_paths):
         if spec.startswith("builtin."):
             builtin_spec = spec[8:]  # Remove "builtin." prefix
             if builtin_spec == "*":
-                # Import all builtin tools
+                # Import all builtin tools (skip factories)
                 for name, func in BUILTIN_TOOLS.items():
+                    if getattr(func, 'is_factory', False):
+                        continue
                     schema = function_to_tool_schema(func)
                     if schema:
                         tools[name] = {"schema": schema, "func": func}
                         log("Loaded builtin tool: %s" % name)
             else:
+                # Check for parameterized builtin: func(args)
+                factory_match = re.match(r"(\w+)\((.+)\)$", builtin_spec)
+                if factory_match:
+                    func_name = factory_match.group(1)
+                    args_str = factory_match.group(2)
+                    if func_name in BUILTIN_TOOLS:
+                        factory = BUILTIN_TOOLS[func_name]
+                        if getattr(factory, 'is_factory', False):
+                            # Parse arguments and call factory
+                            try:
+                                factory_args = parse_factory_args(args_str)
+                                func = factory(*factory_args)
+                                # Use factory-provided name or generate one
+                                tool_name = getattr(func, 'tool_name', func_name)
+                                schema = function_to_tool_schema(func)
+                                if schema:
+                                    # Override schema name with tool_name
+                                    schema['function']['name'] = tool_name
+                                    tools[tool_name] = {
+                                        "schema": schema, "func": func}
+                                    log("Loaded builtin tool: %s" % tool_name)
+                            except Exception as e:
+                                print("%sWarning: Failed to create tool "
+                                      "'%s': %s%s" %
+                                      (YELLOW, spec, e, RESET), file=sys.stderr)
+                        else:
+                            print("%sWarning: '%s' is not a factory tool%s" %
+                                  (YELLOW, func_name, RESET), file=sys.stderr)
+                    else:
+                        print("%sWarning: Unknown builtin tool '%s'%s" %
+                              (YELLOW, func_name, RESET), file=sys.stderr)
                 # Import specific builtin tool
-                if builtin_spec in BUILTIN_TOOLS:
+                elif builtin_spec in BUILTIN_TOOLS:
                     func = BUILTIN_TOOLS[builtin_spec]
-                    schema = function_to_tool_schema(func)
-                    if schema:
-                        tools[builtin_spec] = {"schema": schema, "func": func}
-                        log("Loaded builtin tool: %s" % builtin_spec)
+                    if getattr(func, 'is_factory', False):
+                        print("%sWarning: '%s' requires arguments, "
+                              "e.g. builtin.%s('path')%s" %
+                              (YELLOW, builtin_spec, builtin_spec, RESET),
+                              file=sys.stderr)
+                    else:
+                        schema = function_to_tool_schema(func)
+                        if schema:
+                            tools[builtin_spec] = {"schema": schema, "func": func}
+                            log("Loaded builtin tool: %s" % builtin_spec)
                 else:
                     print("%sWarning: Unknown builtin tool '%s'%s" %
                           (YELLOW, builtin_spec, RESET), file=sys.stderr)
@@ -1130,6 +1169,17 @@ def load_tools(tool_specs, search_paths):
                 print("%sWarning: Could not import tool '%s': %s%s" %
                       (YELLOW, spec, e, RESET), file=sys.stderr)
     return tools
+
+
+def parse_factory_args(args_str):
+    """Parse factory arguments from a string like "'hello.txt'" or "1, 'two'"."""
+    # Use ast.literal_eval for safe parsing of literals
+    import ast
+    # Wrap in tuple if multiple args, or just eval single arg
+    if ',' in args_str:
+        return ast.literal_eval('(' + args_str + ')')
+    else:
+        return (ast.literal_eval(args_str),)
 
 
 def load_module_from_path(module_name, search_paths):
@@ -1579,9 +1629,28 @@ def fetch_clean(url: str):
 fetch_clean.safe = True
 
 
+def write_file(path: str):
+    """Factory that creates a file writer tool for a specific path.
+
+    Usage in prompt: builtin.write_file('hello.txt')
+    """
+    def writer(content: str):
+        """Write content to the file."""
+        with open(path, 'w') as f:
+            f.write(content)
+        return "Wrote %d bytes to %s" % (len(content), path)
+    writer.__doc__ = "Write content to %s." % path
+    writer.tool_name = "write_file"
+    return writer
+
+
+write_file.is_factory = True
+
+
 BUILTIN_TOOLS = {
     "calculator": calculator,
     "fetch_clean": fetch_clean,
+    "write_file": write_file,
 }
 
 
