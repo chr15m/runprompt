@@ -10,7 +10,6 @@ import urllib.error
 import importlib.util
 import inspect
 import argparse
-from html.parser import HTMLParser
 
 # Global config state (loaded once at startup)
 CONFIG = {
@@ -1340,61 +1339,47 @@ def log(msg):
 # === BUILTIN TOOLS ===
 
 
-class _TextExtractor(HTMLParser):
-    """HTML parser that extracts visible text content."""
-    SKIP_TAGS = {'script', 'style', 'head', 'meta', 'link', 'noscript', 'svg'}
+def _fetch_clean_simple(url: str):
+    """Simple HTML fetcher that extracts visible text (fallback)."""
+    from html.parser import HTMLParser
 
-    def __init__(self):
-        super().__init__()
-        self.text = []
-        self.skip_depth = 0
+    class TextExtractor(HTMLParser):
+        SKIP_TAGS = {'script', 'style', 'head', 'meta', 'link', 'noscript', 'svg'}
 
-    def handle_starttag(self, tag, attrs):
-        # Reset skip depth when entering body (handles missing </head>)
-        if tag == 'body':
-            print("DEBUG _TextExtractor: <body> tag, resetting skip_depth from %d to 0" % self.skip_depth, file=sys.stderr)
+        def __init__(self):
+            super().__init__()
+            self.text = []
             self.skip_depth = 0
-        elif tag in self.SKIP_TAGS:
-            self.skip_depth += 1
-            print("DEBUG _TextExtractor: <%s> skip_depth now %d" % (tag, self.skip_depth), file=sys.stderr)
-        elif tag in ('p', 'br', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4',
-                     'h5', 'h6'):
-            self.text.append('\n')
 
-    def handle_endtag(self, tag):
-        if tag in self.SKIP_TAGS and self.skip_depth > 0:
-            self.skip_depth -= 1
-            print("DEBUG _TextExtractor: </%s> skip_depth now %d" % (tag, self.skip_depth), file=sys.stderr)
-        elif tag in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5',
-                     'h6'):
-            self.text.append('\n')
+        def handle_starttag(self, tag, attrs):
+            if tag == 'body':
+                self.skip_depth = 0
+            elif tag in self.SKIP_TAGS:
+                self.skip_depth += 1
+            elif tag in ('p', 'br', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4',
+                         'h5', 'h6'):
+                self.text.append('\n')
 
-    def handle_data(self, data):
-        if self.skip_depth == 0:
-            self.text.append(data)
-        elif len(data.strip()) > 0:
-            print("DEBUG _TextExtractor: SKIPPING data (depth=%d): %s" % (self.skip_depth, data[:50]), file=sys.stderr)
+        def handle_endtag(self, tag):
+            if tag in self.SKIP_TAGS and self.skip_depth > 0:
+                self.skip_depth -= 1
+            elif tag in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5',
+                         'h6'):
+                self.text.append('\n')
 
-    def get_text(self):
-        import html
-        text = ''.join(self.text)
-        # Normalize whitespace: collapse runs of spaces, preserve newlines
-        lines = text.split('\n')
-        lines = [' '.join(line.split()) for line in lines]
-        text = '\n'.join(lines)
-        # Collapse multiple blank lines
-        while '\n\n\n' in text:
-            text = text.replace('\n\n\n', '\n\n')
-        return html.unescape(text.strip())
+        def handle_data(self, data):
+            if self.skip_depth == 0:
+                self.text.append(data)
 
+        def get_text(self):
+            import html
+            text = ''.join(self.text)
+            lines = [' '.join(line.split()) for line in text.split('\n')]
+            text = '\n'.join(lines)
+            while '\n\n\n' in text:
+                text = text.replace('\n\n\n', '\n\n')
+            return html.unescape(text.strip())
 
-def fetch_clean(url: str):
-    """Fetch a web page and extract its text content.
-
-    Fetches the URL and returns the visible text with HTML tags removed.
-    Scripts, styles, and other non-visible elements are excluded.
-    """
-    print("DEBUG fetch_clean: fetching url:", url, file=sys.stderr)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                       'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -1403,18 +1388,49 @@ def fetch_clean(url: str):
         'Accept-Language': 'en-US,en;q=0.5',
     }
     req = urllib.request.Request(url, headers=headers)
-    print("DEBUG fetch_clean: opening request", file=sys.stderr)
     with urllib.request.urlopen(req, timeout=30) as resp:
-        print("DEBUG fetch_clean: response status:", resp.status, file=sys.stderr)
         html_content = resp.read().decode('utf-8', errors='replace')
-    print("DEBUG fetch_clean: html length:", len(html_content), file=sys.stderr)
-    print("DEBUG fetch_clean: first 2000 chars:", html_content[:2000], file=sys.stderr)
-    extractor = _TextExtractor()
+    extractor = TextExtractor()
     extractor.feed(html_content)
-    result = extractor.get_text()
-    print("DEBUG fetch_clean: extracted text length:", len(result), file=sys.stderr)
-    print("DEBUG fetch_clean: first 2000 chars of result:", result[:2000], file=sys.stderr)
-    return result
+    return extractor.get_text()
+
+
+def fetch_clean(url: str):
+    """Fetch a web page and extract its main content as HTML.
+
+    Uses Firefox Reader View via Playwright for best results. Falls back to
+    simple text extraction if Playwright is not installed.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("Warning: playwright not installed. Using simple scraper. "
+              "For better results install with:\n"
+              "  pip install playwright && playwright install firefox",
+              file=sys.stderr)
+        return _fetch_clean_simple(url)
+    with sync_playwright() as p:
+        browser = p.firefox.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        reader_url = "about:reader?url=%s" % url
+        page.goto(reader_url)
+        page.wait_for_timeout(1000)
+        page.wait_for_selector(
+            '[data-l10n-id="about-reader-loading"]',
+            state='hidden',
+            timeout=20000
+        )
+        html_content = page.evaluate("""() => {
+            const header = document.querySelector('div.header');
+            const content = document.querySelector('div.content');
+            let result = '';
+            if (header) result += header.innerHTML;
+            if (content) result += content.innerHTML;
+            return result || document.body.innerHTML;
+        }""")
+        browser.close()
+        return html_content
 
 
 fetch_clean.safe = True
