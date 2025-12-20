@@ -1083,9 +1083,6 @@ def load_tools(tool_specs, search_paths):
                 if schema:
                     tools[func_name] = {"schema": schema, "func": func}
                     log("Loaded tool: %s from %s" % (func_name, module_name))
-                else:
-                    print("%sWarning: Function '%s' has no docstring%s" %
-                          (YELLOW, func_name, RESET), file=sys.stderr)
             except Exception as e:
                 print("%sWarning: Could not import tool '%s': %s%s" %
                       (YELLOW, spec, e, RESET), file=sys.stderr)
@@ -1112,9 +1109,18 @@ def load_module_from_path(module_name, search_paths):
 
 def function_to_tool_schema(func):
     doc = inspect.getdoc(func)
-    if not doc:
-        return None
     sig = inspect.signature(func)
+    if not doc:
+        # Auto-generate minimal description from signature
+        params = ", ".join(
+            "%s: %s" % (p, python_type_to_json_type(
+                sig.parameters[p].annotation
+                if sig.parameters[p].annotation is not inspect.Parameter.empty
+                else None))
+            for p in sig.parameters if p not in ("self", "cls"))
+        doc = "%s(%s)" % (func.__name__, params)
+        print("%sWarning: Function '%s' has no docstring, using: %s%s" %
+              (YELLOW, func.__name__, doc, RESET), file=sys.stderr)
     properties = {}
     required = []
     for param_name, param in sig.parameters.items():
