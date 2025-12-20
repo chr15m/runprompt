@@ -1,0 +1,8 @@
+---
+model: openai/gpt-4o
+input:
+  schema:
+    name: string, the person's name
+    age?: number, the person's age (optional)
+---
+Hello {{name}}! {{#if age}}You are {{age}} years old.{{/if}}
