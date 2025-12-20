@@ -1330,7 +1330,7 @@ def format_tool_call_summary(tool_name, args):
 
 
 def truncate_value(value, max_len=50):
-    s = str(value)
+    s = str(value).replace('\r\n', '\\n').replace('\r', '\\n').replace('\n', '\\n')
     return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
