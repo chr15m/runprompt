@@ -302,9 +302,10 @@ Available builtin tools:
 |------|-------------|
 | `calculator` | Safely evaluate mathematical expressions (arithmetic, trig, log, etc.) |
 | `fetch_clean` | Fetch a URL and return a lightweight version of the page for LLM consumption |
+| `datetime` | Return current date and time in ISO format (YYYY-MM-DDTHH:MM:SS) |
 | `write_file('path')` | Write content to a specific file (parameterized) |
 
-The `calculator` and `fetch_clean` tools are marked as safe (auto-approved with `--safe-yes`). The `write_file` tool requires confirmation since it modifies the filesystem.
+The `calculator`, `datetime`, and `fetch_clean` tools are marked as safe (auto-approved with `--safe-yes`). The `write_file` tool requires confirmation since it modifies the filesystem.
 
 ### Parameterized tools
 

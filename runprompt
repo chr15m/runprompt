@@ -1647,8 +1647,18 @@ def write_file(path: str):
 write_file.is_factory = True
 
 
+def datetime_now():
+    """Return current date and time in ISO format (YYYY-MM-DDTHH:MM:SS)."""
+    from datetime import datetime
+    return datetime.now().isoformat(timespec='seconds')
+
+
+datetime_now.safe = True
+
+
 BUILTIN_TOOLS = {
     "calculator": calculator,
+    "datetime": datetime_now,
     "fetch_clean": fetch_clean,
     "write_file": write_file,
 }
