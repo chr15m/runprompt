@@ -49,6 +49,10 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 TIMEOUT = 120
 
+# Session cost accumulator (None means unknown)
+SESSION_COST = 0.0
+SESSION_COST_KNOWN = True
+
 # === CONFIGURATION CASCADE ===
 
 
@@ -310,6 +314,9 @@ def main():
     while True:
         response = make_request(url, api_key, model, messages, output_config,
                                 effective_provider, tools if tools else None)
+
+        # Print usage info
+        print_usage(response)
 
         # Print any text content immediately
         text_content = extract_text_content(response, effective_provider)
@@ -952,6 +959,36 @@ def extract_tool_calls(response, provider):
                     "arguments": args,
                 })
     return tool_calls
+
+
+def format_tokens(n):
+    """Format token count with k suffix for thousands."""
+    if n >= 1000:
+        return "%.1fk" % (n / 1000) if n < 10000 else "%dk" % (n // 1000)
+    return str(n)
+
+
+def print_usage(response):
+    """Print token usage and cost info from response."""
+    global SESSION_COST, SESSION_COST_KNOWN
+    usage = response.get("usage", {})
+    if not usage:
+        return
+    sent = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+    recv = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+    total = usage.get("total_tokens") or (sent + recv)
+    cost = usage.get("cost")
+    if cost is not None:
+        SESSION_COST += cost
+    else:
+        SESSION_COST_KNOWN = False
+    msg = "Tokens: %s sent, %s received, %s total." % (
+        format_tokens(sent), format_tokens(recv), format_tokens(total))
+    if cost is not None or SESSION_COST > 0:
+        cost_str = "$%.2f" % cost if cost >= 0.01 else "$%.4f" % cost
+        session_str = "$%.2f" % SESSION_COST if SESSION_COST >= 0.01 else "$%.4f" % SESSION_COST
+        msg += " Cost: %s message, %s session." % (cost_str, session_str)
+    print("%s%s%s" % (YELLOW, msg, RESET), file=sys.stderr)
 
 
 def extract_error_message(error_body):
