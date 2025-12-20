@@ -10,6 +10,7 @@ import urllib.error
 import importlib.util
 import inspect
 import argparse
+from html.parser import HTMLParser
 
 # Global config state (loaded once at startup)
 CONFIG = {
@@ -1020,6 +1021,28 @@ def build_tool_result_message(tool_call, result, error, provider):
 def load_tools(tool_specs, search_paths):
     tools = {}  # name -> {"schema": ..., "func": ...}
     for spec in tool_specs:
+        # Handle builtin tools
+        if spec.startswith("builtin."):
+            builtin_spec = spec[8:]  # Remove "builtin." prefix
+            if builtin_spec == "*":
+                # Import all builtin tools
+                for name, func in BUILTIN_TOOLS.items():
+                    schema = function_to_tool_schema(func)
+                    if schema:
+                        tools[name] = {"schema": schema, "func": func}
+                        log("Loaded builtin tool: %s" % name)
+            else:
+                # Import specific builtin tool
+                if builtin_spec in BUILTIN_TOOLS:
+                    func = BUILTIN_TOOLS[builtin_spec]
+                    schema = function_to_tool_schema(func)
+                    if schema:
+                        tools[builtin_spec] = {"schema": schema, "func": func}
+                        log("Loaded builtin tool: %s" % builtin_spec)
+                else:
+                    print("Warning: Unknown builtin tool '%s'" % builtin_spec,
+                          file=sys.stderr)
+            continue
         if spec.endswith(".*"):
             # Import all functions from module
             module_name = spec[:-2]
@@ -1312,6 +1335,94 @@ def save_response(response, provider, save_path):
 def log(msg):
     if get_conf("verbose", False):
         print(msg, file=sys.stderr)
+
+
+# === BUILTIN TOOLS ===
+
+
+class _TextExtractor(HTMLParser):
+    """HTML parser that extracts visible text content."""
+    SKIP_TAGS = {'script', 'style', 'head', 'meta', 'link', 'noscript', 'svg'}
+
+    def __init__(self):
+        super().__init__()
+        self.text = []
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        # Reset skip depth when entering body (handles missing </head>)
+        if tag == 'body':
+            print("DEBUG _TextExtractor: <body> tag, resetting skip_depth from %d to 0" % self.skip_depth, file=sys.stderr)
+            self.skip_depth = 0
+        elif tag in self.SKIP_TAGS:
+            self.skip_depth += 1
+            print("DEBUG _TextExtractor: <%s> skip_depth now %d" % (tag, self.skip_depth), file=sys.stderr)
+        elif tag in ('p', 'br', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4',
+                     'h5', 'h6'):
+            self.text.append('\n')
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP_TAGS and self.skip_depth > 0:
+            self.skip_depth -= 1
+            print("DEBUG _TextExtractor: </%s> skip_depth now %d" % (tag, self.skip_depth), file=sys.stderr)
+        elif tag in ('p', 'div', 'li', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5',
+                     'h6'):
+            self.text.append('\n')
+
+    def handle_data(self, data):
+        if self.skip_depth == 0:
+            self.text.append(data)
+        elif len(data.strip()) > 0:
+            print("DEBUG _TextExtractor: SKIPPING data (depth=%d): %s" % (self.skip_depth, data[:50]), file=sys.stderr)
+
+    def get_text(self):
+        import html
+        text = ''.join(self.text)
+        # Normalize whitespace: collapse runs of spaces, preserve newlines
+        lines = text.split('\n')
+        lines = [' '.join(line.split()) for line in lines]
+        text = '\n'.join(lines)
+        # Collapse multiple blank lines
+        while '\n\n\n' in text:
+            text = text.replace('\n\n\n', '\n\n')
+        return html.unescape(text.strip())
+
+
+def fetch_clean(url: str):
+    """Fetch a web page and extract its text content.
+
+    Fetches the URL and returns the visible text with HTML tags removed.
+    Scripts, styles, and other non-visible elements are excluded.
+    """
+    print("DEBUG fetch_clean: fetching url:", url, file=sys.stderr)
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                      'AppleWebKit/537.36 (KHTML, like Gecko) '
+                      'Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    }
+    req = urllib.request.Request(url, headers=headers)
+    print("DEBUG fetch_clean: opening request", file=sys.stderr)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        print("DEBUG fetch_clean: response status:", resp.status, file=sys.stderr)
+        html_content = resp.read().decode('utf-8', errors='replace')
+    print("DEBUG fetch_clean: html length:", len(html_content), file=sys.stderr)
+    print("DEBUG fetch_clean: first 2000 chars:", html_content[:2000], file=sys.stderr)
+    extractor = _TextExtractor()
+    extractor.feed(html_content)
+    result = extractor.get_text()
+    print("DEBUG fetch_clean: extracted text length:", len(result), file=sys.stderr)
+    print("DEBUG fetch_clean: first 2000 chars of result:", result[:2000], file=sys.stderr)
+    return result
+
+
+fetch_clean.safe = True
+
+
+BUILTIN_TOOLS = {
+    "fetch_clean": fetch_clean,
+}
 
 
 if __name__ == "__main__":

@@ -277,6 +277,27 @@ FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'
 I couldn't read that file because it doesn't exist. Would you like me to try a different path?
 ```
 
+### Builtin tools
+
+Runprompt includes builtin tools that can be used without creating external Python files:
+
+```handlebars
+---
+model: anthropic/claude-sonnet-4-20250514
+tools:
+  - builtin.fetch_clean
+---
+Please summarize this page: {{ARGS}}
+```
+
+Available builtin tools:
+
+| Tool | Description |
+|------|-------------|
+| `fetch_clean` | Fetch a URL and extract visible text content (HTML tags removed) |
+
+Use `builtin.*` to import all builtin tools, or `builtin.tool_name` for a specific one.
+
 ### Underscore prefix
 
 Files or functions starting with `_` are excluded from wildcard imports:

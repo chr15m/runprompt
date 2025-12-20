@@ -461,6 +461,90 @@ def test_safe_yes_auto_approves_safe_tools():
         server.shutdown()
 
 
+def test_builtin_tool_wildcard():
+    """Test that builtin.* loads all builtin tools."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 8, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 8)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--tools=builtin.*', 'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        req = MockHandler.received_requests[0]
+        body = req['body']
+        tools = body.get('tools', [])
+        tool_names = [t['function']['name'] for t in tools]
+        assert 'fetch_clean' in tool_names, "Expected fetch_clean builtin tool"
+    finally:
+        server.shutdown()
+
+
+def test_builtin_tool_specific():
+    """Test that builtin.fetch_clean loads the specific tool."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 9, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 9)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--tools=builtin.fetch_clean', 'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        req = MockHandler.received_requests[0]
+        body = req['body']
+        tools = body.get('tools', [])
+        assert len(tools) == 1, "Expected exactly 1 tool"
+        assert tools[0]['function']['name'] == 'fetch_clean', \
+            "Expected fetch_clean tool"
+        # Check schema
+        params = tools[0]['function']['parameters']
+        assert 'url' in params['properties'], "Expected url parameter"
+        assert params['properties']['url']['type'] == 'string', \
+            "url should be string type"
+    finally:
+        server.shutdown()
+
+
+def test_builtin_tool_unknown():
+    """Test that unknown builtin tool shows warning."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 10, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 10)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--tools=builtin.nonexistent', 'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        assert 'Unknown builtin tool' in result.stderr, \
+            "Expected warning about unknown builtin tool"
+    finally:
+        server.shutdown()
+
+
 def test_safe_yes_still_prompts_unsafe_tools():
     """Test that --safe-yes still prompts for tools not marked as safe."""
     responses = [
@@ -528,6 +612,9 @@ if __name__ == '__main__':
     test("unknown tool error", test_unknown_tool_error)
     test("safe-yes auto-approves safe tools", test_safe_yes_auto_approves_safe_tools)
     test("safe-yes still prompts unsafe tools", test_safe_yes_still_prompts_unsafe_tools)
+    test("builtin tool wildcard", test_builtin_tool_wildcard)
+    test("builtin tool specific", test_builtin_tool_specific)
+    test("builtin tool unknown", test_builtin_tool_unknown)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
