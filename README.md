@@ -1,6 +1,6 @@
 # runprompt
 
-Run LLM [.prompt](https://google.github.io/dotprompt/) files from your shell with a single single-file Python script.
+Run LLM [.prompt](https://google.github.io/dotprompt/) files from your shell with a single-file Python script.
 
 [Dotprompt](https://google.github.io/dotprompt/) is an prompt template format for LLMs where a `.prompt` file contains the prompt and metadata (model, schema, config) in a single file. You can use it to run LLM prompts and get structured responses right in your shell.
 
@@ -15,7 +15,7 @@ chmod +x runprompt
 
 Create `hello.prompt`:
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 ---
@@ -39,7 +39,7 @@ In addition to the following, see the [tests folder](tests/) for more example `.
 
 ### Basic prompt with stdin
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 ---
@@ -50,13 +50,13 @@ Summarize this text: {{STDIN}}
 cat article.txt | ./runprompt summarize.prompt
 ```
 
-The special `{{STDIN}}` variable always contains the raw stdin as a string.
+The special `{{STDIN}}` variable always contains the raw stdin as a string. Both `{{STDIN}}` and `{{ARGS}}` are always available; if input is JSON it's also parsed into individual variables.
 
 ### Command line arguments
 
 Pass arguments directly on the command line:
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 ---
@@ -67,13 +67,13 @@ Process this: {{ARGS}}
 ./runprompt process.prompt Hello world, please summarize this text.
 ```
 
-The special `{{ARGS}}` variable contains all arguments after the prompt file, joined with spaces.
+The special `{{ARGS}}` variable contains all arguments after the prompt file, joined with spaces. The `{{INPUT}}` variable contains STDIN if provided, otherwise ARGS.
 
 ### Structured JSON output
 
 Extract structured data using an output schema:
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 input:
@@ -112,6 +112,7 @@ Make `.prompt` files directly executable with a shebang:
 
 ```handlebars
 #!/usr/bin/env runprompt
+---
 model: anthropic/claude-sonnet-4-20250514
 ---
 Hello, I'm {{name}}!
@@ -133,11 +134,14 @@ Override frontmatter values from the command line:
 ./runprompt --output.format json extract.prompt
 ```
 
-Note: CLI overrides set frontmatter values (model, config, output format, etc.), not template variables. To pass template variables, use stdin:
+Use dot notation for nested values (e.g. `--output.format`). Pass template variables via stdin or as JSON argument:
 
 ```bash
 echo '{"name": "Alice"}' | ./runprompt hello.prompt
+./runprompt hello.prompt '{"name": "Alice"}'
 ```
+
+See `--help` for all options.
 
 ## Tools
 
@@ -169,7 +173,7 @@ def calculate(expression: str):
 
 Reference tools in the frontmatter using Python import syntax:
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 tools:
@@ -248,6 +252,8 @@ Tools are searched for in:
 ./runprompt --tool-path ./my_tools --tool-path /shared/tools prompt.prompt
 ```
 
+All paths are searched in addition to any `tool_path` entries in config files.
+
 ### Type hints
 
 Type hints on function parameters map to JSON Schema types:
@@ -281,7 +287,7 @@ I couldn't read that file because it doesn't exist. Would you like me to try a d
 
 Runprompt includes builtin tools that can be used without creating external Python files:
 
-```handlebars
+```yaml
 ---
 model: anthropic/claude-sonnet-4-20250514
 tools:
@@ -295,7 +301,9 @@ Available builtin tools:
 | Tool | Description |
 |------|-------------|
 | `calculator` | Safely evaluate mathematical expressions (arithmetic, trig, log, etc.) |
-| `fetch_clean` | Fetch a URL and extract visible text content (HTML tags removed) |
+| `fetch_clean` | Fetch a URL and return a lightweight version of the page for LLM consumption |
+
+Both builtin tools are marked as safe (auto-approved with `--safe-yes`).
 
 Use `builtin.*` to import all builtin tools, or `builtin.tool_name` for a specific one.
 
