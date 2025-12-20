@@ -229,6 +229,7 @@ def main():
             if input_schema:
                 first_key = list(input_schema.keys())[0]
                 variables[first_key] = args_str
+    validate_required_inputs(meta, variables)
     prompt = render_template(template, variables)
     log("Rendered prompt: %s" % prompt)
     output_config = meta.get("output", {})
@@ -533,7 +534,6 @@ def parse_yaml(s):
     result = {}
     stack = [(result, -1)]
     current_list = None
-    current_list_key = None
     current_list_indent = -1
     for line in s.split("\n"):
         if not line.strip() or line.strip().startswith("#"):
@@ -543,14 +543,14 @@ def parse_yaml(s):
         list_match = re.match(r"^(\s*)-\s*(.*)", line)
         if list_match:
             item_value = list_match.group(2).strip()
-            if current_list is not None and indent > current_list_indent:
+            if current_list is not None and indent >= current_list_indent:
                 current_list.append(parse_yaml_value(item_value) if item_value else item_value)
                 continue
-        # Not a list item or different context - reset list tracking
+        # Not a list item - reset list tracking if we've dedented
         if current_list is not None and indent <= current_list_indent:
             current_list = None
-            current_list_key = None
             current_list_indent = -1
+        # Pop stack for dedented lines
         while stack and indent <= stack[-1][1]:
             stack.pop()
         if not stack:
@@ -563,23 +563,33 @@ def parse_yaml(s):
         parent = stack[-1][0]
         if value:
             parent[key] = parse_yaml_value(value)
+            # Reset list tracking when we have a value
+            current_list = None
+            current_list_indent = -1
         else:
-            parent[key] = {}
-            stack.append((parent[key], indent))
-            # Set up for potential list children
-            current_list_key = key
-            current_list = []
-            parent[key] = current_list
-            current_list_indent = indent
-    # Convert empty lists back to empty dicts
-    def fix_empty(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if isinstance(v, list) and len(v) == 0:
-                    obj[k] = {}
-                else:
-                    fix_empty(v)
-    fix_empty(result)
+            # Check if next non-empty line is a list item
+            remaining_lines = s.split("\n")
+            line_idx = remaining_lines.index(line) if line in remaining_lines else -1
+            is_list_parent = False
+            if line_idx >= 0:
+                for next_line in remaining_lines[line_idx + 1:]:
+                    if not next_line.strip() or next_line.strip().startswith("#"):
+                        continue
+                    next_indent = len(next_line) - len(next_line.lstrip())
+                    if next_indent <= indent:
+                        break
+                    if re.match(r"^\s*-\s*", next_line):
+                        is_list_parent = True
+                    break
+            if is_list_parent:
+                parent[key] = []
+                current_list = parent[key]
+                current_list_indent = indent
+            else:
+                parent[key] = {}
+                stack.append((parent[key], indent))
+                current_list = None
+                current_list_indent = -1
     return result
 
 
@@ -604,6 +614,38 @@ def parse_yaml_value(s):
         if parsed:
             return parsed
     return s
+
+
+def get_required_input_fields(meta):
+    """Extract required field names from input schema (fields without ? suffix)."""
+    input_schema = meta.get("input", {}).get("schema", {})
+    required = []
+    for key in input_schema:
+        if not key.endswith("?"):
+            required.append(key)
+    return required
+
+
+def validate_required_inputs(meta, variables):
+    """Check that all required input fields are present. Exit with error if not."""
+    log("DEBUG validate_required_inputs meta: %s" % meta)
+    log("DEBUG validate_required_inputs variables: %s" % variables)
+    required = get_required_input_fields(meta)
+    log("DEBUG required fields: %s" % required)
+    missing = []
+    for field in required:
+        if field not in variables or variables[field] == "":
+            missing.append(field)
+    if missing:
+        print("%sError: Missing required input field(s): %s%s" %
+              (RED, ", ".join(missing), RESET), file=sys.stderr)
+        input_schema = meta.get("input", {}).get("schema", {})
+        print("Expected input schema:", file=sys.stderr)
+        for key, value in input_schema.items():
+            opt = " (optional)" if key.endswith("?") else " (required)"
+            clean_key = key.rstrip("?")
+            print("  %s: %s%s" % (clean_key, value, opt), file=sys.stderr)
+        sys.exit(1)
 
 
 def apply_overrides(meta):
