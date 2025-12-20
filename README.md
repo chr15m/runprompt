@@ -483,3 +483,5 @@ This is a minimal implementation of the [Dotprompt specification](https://google
 - Model config (`temperature`, `maxOutputTokens`, etc.)
 - Partials (`{{>partialName}}`)
 - Nested Picoschema (objects, arrays of objects, enums)
+
+The YAML parser is a minimal implementation that handles only the subset of YAML needed for Dotprompt frontmatter (simple key-value pairs, nested objects, and lists). It will likely fail on complex YAML features like anchors, multi-line strings, or flow syntax. If [PyYAML](https://pyyaml.org/) is installed (`pip install pyyaml`), it will be used instead for full YAML support.

@@ -11,6 +11,13 @@ import importlib.util
 import inspect
 import argparse
 
+# Try to use PyYAML if available, otherwise use minimal parser
+try:
+    import yaml as _yaml
+    _HAS_PYYAML = True
+except ImportError:
+    _HAS_PYYAML = False
+
 # Global config state (loaded once at startup)
 CONFIG = {
     "files": {},      # Merged config from all config files
@@ -530,7 +537,8 @@ def parse_prompt_file(path):
     return {}, content.strip()
 
 
-def parse_yaml(s):
+def _parse_yaml_minimal(s):
+    """Minimal YAML parser for dotprompt frontmatter."""
     result = {}
     stack = [(result, -1)]
     current_list = None
@@ -591,6 +599,13 @@ def parse_yaml(s):
                 current_list = None
                 current_list_indent = -1
     return result
+
+
+def parse_yaml(s):
+    """Parse YAML string. Uses PyYAML if available, otherwise minimal parser."""
+    if _HAS_PYYAML:
+        return _yaml.safe_load(s) or {}
+    return _parse_yaml_minimal(s)
 
 
 def parse_yaml_value(s):
