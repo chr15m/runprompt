@@ -1,0 +1,10 @@
+---
+model: anthropic/claude-sonnet-4-20250514
+---
+Please describe and summarize the attached file(s). For each file, provide:
+
+1. The type of content (text, code, image, etc.)
+2. A brief summary of what it contains
+3. Any notable details or observations
+
+If it's an image, describe what you see in detail.
