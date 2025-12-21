@@ -10,6 +10,9 @@ import urllib.error
 import importlib.util
 import inspect
 import argparse
+import glob
+import base64
+import mimetypes
 
 # Try to use PyYAML if available, otherwise use minimal parser
 try:
@@ -285,6 +288,12 @@ def main():
         tools = load_tools(tool_specs, search_paths)
         log("Loaded %d tools: %s" % (len(tools), list(tools.keys())))
 
+    # Read files from --read flags
+    read_files = []
+    if args.read:
+        read_files = read_files_for_context(args.read)
+        log("Read %d file(s) for context" % len(read_files))
+
     if provider == "test":
         response = load_test_response(prompt_path)
         test_provider = response.get("_provider", "openai")
@@ -315,8 +324,9 @@ def main():
         print(result)
         return
 
-    # Build initial messages
-    messages = [{"role": "user", "content": prompt}]
+    # Build initial messages with optional file attachments
+    user_content = build_content_with_files(prompt, read_files, effective_provider)
+    messages = [{"role": "user", "content": user_content}]
 
     # Tool execution loop
     while True:
@@ -450,6 +460,8 @@ Examples:
   runprompt -v --save-response out.json hello.prompt
   runprompt --cache hello.prompt
   runprompt --safe-yes tool_prompt.prompt
+  runprompt --read src/*.py review.prompt
+  runprompt --read README.md --read "src/**/*.py" analyze.prompt
   OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
 
 Overrides:
@@ -476,6 +488,8 @@ def parse_args(args):
                         help="Use custom OpenAI-compatible endpoint")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
+    parser.add_argument("--read", action="append", default=[], metavar="FILE",
+                        help="Read file(s) into context (supports globs)")
     parsed, unknown = parser.parse_known_args(args)
     # Parse unknown args for --key=value overrides and extra positional args
     parsed.overrides = {}
@@ -1491,6 +1505,133 @@ def save_response(response, provider, save_path):
 def log(msg):
     if get_conf("verbose", False):
         print(msg, file=sys.stderr)
+
+
+# === FILE READING FOR --read ===
+
+
+def is_binary_file(path):
+    """Check if a file is binary by looking for null bytes."""
+    try:
+        with open(path, 'rb') as f:
+            chunk = f.read(8192)
+        return b'\x00' in chunk
+    except (IOError, OSError):
+        return False
+
+
+def get_mime_type(path):
+    """Get MIME type for a file, with sensible defaults."""
+    mime_type, _ = mimetypes.guess_type(path)
+    if mime_type:
+        return mime_type
+    # Default based on binary detection
+    return "application/octet-stream" if is_binary_file(path) else "text/plain"
+
+
+def is_supported_media_type(mime_type):
+    """Check if MIME type is supported for media blocks."""
+    supported_prefixes = ("image/", "audio/", "video/")
+    supported_types = ("application/pdf",)
+    return (mime_type.startswith(supported_prefixes) or
+            mime_type in supported_types)
+
+
+def read_files_for_context(patterns):
+    """Read files matching patterns, return list of (path, content, is_binary)."""
+    files = []
+    seen = set()
+    for pattern in patterns:
+        # Expand glob pattern
+        matches = glob.glob(pattern, recursive=True)
+        if not matches:
+            # No glob match - treat as literal path
+            if os.path.exists(pattern):
+                matches = [pattern]
+            else:
+                print("%sWarning: No files match '%s'%s" %
+                      (YELLOW, pattern, RESET), file=sys.stderr)
+                continue
+        for path in sorted(matches):
+            if path in seen:
+                continue
+            seen.add(path)
+            if os.path.isdir(path):
+                continue
+            try:
+                is_binary = is_binary_file(path)
+                if is_binary:
+                    with open(path, 'rb') as f:
+                        content = f.read()
+                else:
+                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                        content = f.read()
+                files.append((path, content, is_binary))
+                log("Read file: %s (%s)" %
+                    (path, "binary" if is_binary else "text"))
+            except (IOError, OSError) as e:
+                print("%sWarning: Cannot read '%s': %s%s" %
+                      (YELLOW, path, e, RESET), file=sys.stderr)
+    return files
+
+
+def build_media_block(path, content, provider):
+    """Build a media content block for binary files."""
+    mime_type = get_mime_type(path)
+    b64_data = base64.b64encode(content).decode('ascii')
+    if provider == "anthropic":
+        if mime_type == "application/pdf":
+            return {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": b64_data,
+                }
+            }
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime_type,
+                "data": b64_data,
+            }
+        }
+    else:
+        # OpenAI format (also used by Google AI compat layer, OpenRouter)
+        data_url = "data:%s;base64,%s" % (mime_type, b64_data)
+        if mime_type.startswith("image/"):
+            return {"type": "image_url", "image_url": {"url": data_url}}
+        # For other types, fall back to text description
+        return {"type": "text", "text": "[Binary file: %s (%s, %d bytes)]" %
+                (path, mime_type, len(content))}
+
+
+def build_content_with_files(prompt, files, provider):
+    """Build multi-part content array with files and prompt."""
+    if not files:
+        return prompt  # Simple string content
+    content = []
+    # Add header
+    content.append({"type": "text", "text": "# Attached files\n"})
+    # Add each file
+    for path, file_content, is_binary in files:
+        content.append({"type": "text", "text": "## File: %s\n" % path})
+        if is_binary:
+            mime_type = get_mime_type(path)
+            if is_supported_media_type(mime_type):
+                content.append(build_media_block(path, file_content, provider))
+            else:
+                content.append({
+                    "type": "text",
+                    "text": "[Binary file: %s (%s, %d bytes)]" %
+                            (path, mime_type, len(file_content))
+                })
+        else:
+            content.append({"type": "text", "text": file_content})
+    # Add the main prompt
+    content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
+    return content
 
 
 # === BUILTIN TOOLS ===
