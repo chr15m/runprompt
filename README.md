@@ -206,7 +206,7 @@ The weather in Tokyo is currently 72°F and sunny.
 
 ### Safe tools
 
-Mark tools as "safe" to allow them to run without confirmation when using `--safe-yes`:
+Mark tools as "safe" to allow them to run without confirmation when using `--safe-yes`, env var `RUNPROMPT_SAFE_YES`, or config `safe_yes`:
 
 ```python
 # my_tools.py
@@ -224,7 +224,7 @@ def delete_file(path: str):
 # Not marked as safe - will always prompt for confirmation
 ```
 
-Run with `--safe-yes` to auto-approve safe tools:
+Run with `--safe-yes` or env var `RUNPROMPT_SAFE_YES` or config var `safe_yes` to auto-approve safe tools:
 
 ```bash
 ./runprompt --safe-yes weather.prompt
