@@ -289,10 +289,17 @@ def main():
         tools = load_tools(tool_specs, search_paths)
         log("Loaded %d tools: %s" % (len(tools), list(tools.keys())))
 
+    # Determine effective provider early for file reading
+    base_url = get_conf("base_url") or get_base_url()
+    if base_url:
+        effective_provider = "openai"
+    else:
+        effective_provider = provider
+
     # Read files from --read flags
     read_files = []
     if args.read:
-        read_files = read_files_for_context(args.read)
+        read_files = read_files_for_context(args.read, effective_provider)
         log("Read %d file(s) for context" % len(read_files))
 
     if provider == "test":
@@ -302,13 +309,10 @@ def main():
         print(result)
         return
 
-    base_url = get_conf("base_url") or get_base_url()
     if base_url:
         url, api_key = get_provider_config(provider, base_url)
-        effective_provider = "openai"
     else:
         url, api_key = get_provider_config(provider)
-        effective_provider = provider
 
     # Check cache
     cached_response = None
@@ -1518,6 +1522,11 @@ def log(msg):
 # === FILE READING FOR --read ===
 
 
+def is_url(path):
+    """Check if path is a URL."""
+    return path.startswith("http://") or path.startswith("https://")
+
+
 def is_binary_file(path):
     """Check if a file is binary by looking for null bytes."""
     try:
@@ -1545,15 +1554,92 @@ def is_supported_media_type(mime_type):
             mime_type in supported_types)
 
 
-def read_files_for_context(patterns):
-    """Read files matching patterns, return list of (path, content, is_binary)."""
+def get_url_mime_type(url):
+    """Get MIME type for URL, using HEAD request if extension unknown."""
+    mime_type, _ = mimetypes.guess_type(url)
+    if mime_type:
+        return mime_type
+    # Try HEAD request for Content-Type
+    try:
+        req = urllib.request.Request(url, method='HEAD')
+        req.add_header('User-Agent', 'runprompt/1.0')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content_type = resp.headers.get('Content-Type', '')
+            if content_type:
+                return content_type.split(';')[0].strip()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+        pass
+    return "text/plain"
+
+
+def fetch_url_content(url):
+    """Fetch URL content, return (content_bytes, mime_type)."""
+    req = urllib.request.Request(url)
+    req.add_header('User-Agent', 'runprompt/1.0')
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        content = resp.read()
+        content_type = resp.headers.get('Content-Type', '')
+        mime_type = content_type.split(';')[0].strip() if content_type else None
+        if not mime_type:
+            mime_type, _ = mimetypes.guess_type(url)
+        if not mime_type:
+            mime_type = "application/octet-stream" if b'\x00' in content[:8192] else "text/plain"
+        return content, mime_type
+
+
+def read_files_for_context(patterns, provider=None):
+    """Read files matching patterns, return list of file info dicts.
+    
+    Each dict has: path, content (bytes or str or None), is_binary, is_url, mime_type.
+    For URLs with non-Anthropic providers, content may be None (use URL directly).
+    """
     files = []
     seen = set()
     for pattern in patterns:
-        # Expand glob pattern
+        # Handle URLs (no glob expansion)
+        if is_url(pattern):
+            if pattern in seen:
+                continue
+            seen.add(pattern)
+            mime_type = mimetypes.guess_type(pattern)[0]
+            # OpenRouter proxies URLs for us; all other providers need base64
+            if provider == "openrouter":
+                # Use URL directly (OpenRouter fetches for us)
+                if not mime_type:
+                    mime_type = get_url_mime_type(pattern)
+                is_binary = is_supported_media_type(mime_type)
+                files.append({
+                    "path": pattern,
+                    "content": None,  # Will use URL directly
+                    "is_binary": is_binary,
+                    "is_url": True,
+                    "mime_type": mime_type,
+                })
+                log("URL (no download): %s (%s)" % (pattern, mime_type))
+            else:
+                # Download for anthropic, openai, googleai, etc.
+                if not mime_type:
+                    mime_type = None  # Will get from download
+                print("%sDownloading: %s%s" % (YELLOW, pattern, RESET),
+                      file=sys.stderr)
+                try:
+                    content, mime_type = fetch_url_content(pattern)
+                    is_binary = b'\x00' in content[:8192] if content else False
+                    files.append({
+                        "path": pattern,
+                        "content": content,
+                        "is_binary": is_binary,
+                        "is_url": True,
+                        "mime_type": mime_type,
+                    })
+                    log("Downloaded URL: %s (%s)" % (pattern, mime_type))
+                except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+                    print("%sWarning: Cannot fetch '%s': %s%s" %
+                          (YELLOW, pattern, e, RESET), file=sys.stderr)
+            continue
+        # Expand glob pattern for local files
         matches = glob.glob(pattern, recursive=True)
         if not matches:
-            # No glob match - treat as literal path
             if os.path.exists(pattern):
                 matches = [pattern]
             else:
@@ -1574,7 +1660,13 @@ def read_files_for_context(patterns):
                 else:
                     with open(path, 'r', encoding='utf-8', errors='replace') as f:
                         content = f.read()
-                files.append((path, content, is_binary))
+                files.append({
+                    "path": path,
+                    "content": content,
+                    "is_binary": is_binary,
+                    "is_url": False,
+                    "mime_type": get_mime_type(path),
+                })
                 log("Read file: %s (%s)" %
                     (path, "binary" if is_binary else "text"))
             except (IOError, OSError) as e:
@@ -1583,9 +1675,24 @@ def read_files_for_context(patterns):
     return files
 
 
-def build_media_block(path, content, provider):
-    """Build a media content block for binary files."""
-    mime_type = get_mime_type(path)
+def build_media_block(file_info, provider):
+    """Build a media content block for binary files or URLs."""
+    path = file_info["path"]
+    content = file_info["content"]
+    mime_type = file_info["mime_type"]
+    is_url = file_info["is_url"]
+    
+    # For non-Anthropic providers, use URL directly if available
+    if is_url and content is None and provider != "anthropic":
+        if mime_type and mime_type.startswith("image/"):
+            return {"type": "image_url", "image_url": {"url": path}}
+        # Non-image URL without content - just describe it
+        return {"type": "text", "text": "[URL: %s (%s)]" % (path, mime_type)}
+    
+    # Need actual content for base64 encoding
+    if content is None:
+        return {"type": "text", "text": "[URL: %s (not downloaded)]" % path}
+    
     b64_data = base64.b64encode(content).decode('ascii')
     if provider == "anthropic":
         if mime_type == "application/pdf":
@@ -1623,20 +1730,30 @@ def build_content_with_files(prompt, files, provider):
     # Add header
     content.append({"type": "text", "text": "# Attached files\n"})
     # Add each file
-    for path, file_content, is_binary in files:
+    for file_info in files:
+        path = file_info["path"]
+        file_content = file_info["content"]
+        is_binary = file_info["is_binary"]
+        mime_type = file_info["mime_type"]
         content.append({"type": "text", "text": "## File: %s\n" % path})
         if is_binary:
-            mime_type = get_mime_type(path)
             if is_supported_media_type(mime_type):
-                content.append(build_media_block(path, file_content, provider))
+                content.append(build_media_block(file_info, provider))
             else:
+                size = len(file_content) if file_content else 0
                 content.append({
                     "type": "text",
                     "text": "[Binary file: %s (%s, %d bytes)]" %
-                            (path, mime_type, len(file_content))
+                            (path, mime_type, size)
                 })
         else:
-            content.append({"type": "text", "text": file_content})
+            if file_content is not None:
+                # Handle bytes content from URL downloads
+                if isinstance(file_content, bytes):
+                    file_content = file_content.decode('utf-8', errors='replace')
+                content.append({"type": "text", "text": file_content})
+            else:
+                content.append({"type": "text", "text": "[Content not available]"})
     # Add the main prompt
     content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
     return content
