@@ -5,6 +5,7 @@ import os
 import json
 import re
 import hashlib
+import time
 import urllib.request
 import urllib.error
 import importlib.util
@@ -958,10 +959,14 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
     log("Request body: %s" % json.dumps(body, indent=2))
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
+        start_time = time.time()
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             response_body = resp.read().decode("utf-8")
-            log("Response: %s" % response_body)
-            return json.loads(response_body)
+        elapsed = time.time() - start_time
+        log("Response: %s" % response_body)
+        response = json.loads(response_body)
+        response["_elapsed"] = elapsed
+        return response
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         log("Error response: %s" % error_body)
@@ -1040,10 +1045,11 @@ def format_tokens(n):
 
 
 def print_usage(response):
-    """Print token usage and cost info from response."""
+    """Print token usage, cost, and timing info from response."""
     global SESSION_COST, SESSION_COST_KNOWN
     usage = response.get("usage", {})
-    if not usage:
+    elapsed = response.get("_elapsed")
+    if not usage and elapsed is None:
         return
     sent = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
     recv = usage.get("completion_tokens") or usage.get("output_tokens") or 0
@@ -1059,6 +1065,8 @@ def print_usage(response):
         cost_str = "$%.2f" % cost if cost >= 0.01 else "$%.4f" % cost
         session_str = "$%.2f" % SESSION_COST if SESSION_COST >= 0.01 else "$%.4f" % SESSION_COST
         msg += " Cost: %s message, %s session." % (cost_str, session_str)
+    if elapsed is not None:
+        msg += " Time: %.3fs." % elapsed
     print("%s%s%s" % (YELLOW, msg, RESET), file=sys.stderr)
 
 
