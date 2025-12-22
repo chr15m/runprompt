@@ -884,6 +884,23 @@ def get_base_url():
             os.environ.get("BASE_URL"))
 
 
+def print_provider_help():
+    """Print available providers and their API key URLs."""
+    api_key_urls = {
+        "anthropic": "https://console.anthropic.com/settings/keys",
+        "openai": "https://platform.openai.com/api-keys",
+        "googleai": "https://aistudio.google.com/app/apikey",
+        "openrouter": "https://openrouter.ai/settings/keys",
+    }
+    print("\nAvailable providers:", file=sys.stderr)
+    for name in sorted(PROVIDERS.keys()):
+        env_var = PROVIDERS[name]["env"]
+        url = api_key_urls.get(name, "")
+        print("  %s (set %s)" % (name, env_var), file=sys.stderr)
+        if url:
+            print("    Get key: %s" % url, file=sys.stderr)
+
+
 def get_provider_config(provider, base_url=None):
     if base_url:
         url = base_url.rstrip("/") + "/chat/completions"
@@ -891,12 +908,24 @@ def get_provider_config(provider, base_url=None):
         log("Using custom base URL: %s" % url)
         return url, api_key
     if provider not in PROVIDERS:
-        print("Unknown provider: %s" % provider, file=sys.stderr)
+        print("%sUnknown provider: %s%s" % (RED, provider, RESET),
+              file=sys.stderr)
+        print_provider_help()
         sys.exit(1)
     config = PROVIDERS[provider]
     api_key = get_api_key(provider)
     if not api_key:
-        print("Missing API key: %s" % config["env"], file=sys.stderr)
+        api_key_urls = {
+            "anthropic": "https://console.anthropic.com/settings/keys",
+            "openai": "https://platform.openai.com/api-keys",
+            "googleai": "https://aistudio.google.com/app/apikey",
+            "openrouter": "https://openrouter.ai/settings/keys",
+        }
+        print("%sMissing API key: %s%s" % (RED, config["env"], RESET),
+              file=sys.stderr)
+        url = api_key_urls.get(provider, "")
+        if url:
+            print("Get key: %s" % url, file=sys.stderr)
         sys.exit(1)
     return config["url"], api_key
 
@@ -976,6 +1005,10 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         log("Error response: %s" % error_body)
         message = extract_error_message(error_body)
         print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
+        # Check if this is an invalid model error from OpenRouter
+        if "is not a valid model" in message.lower() or \
+           "model not found" in message.lower():
+            suggest_openrouter_models(model)
         sys.exit(1)
 
 
@@ -1095,6 +1128,44 @@ def extract_error_message(error_body):
     except ValueError:
         pass
     return error_body
+
+
+def fetch_openrouter_models(prefix=None):
+    """Fetch available models from OpenRouter, optionally filtered by prefix."""
+    url = "https://openrouter.ai/api/v1/models"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'runprompt/1.0')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        models = data.get("data", [])
+        if prefix:
+            models = [m for m in models if m.get("id", "").startswith(prefix)]
+        # Sort by context length (proxy for capability/popularity)
+        models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
+        return models
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+        return []
+
+
+def suggest_openrouter_models(invalid_model):
+    """Suggest similar OpenRouter models when an invalid model is specified."""
+    # Extract provider prefix (e.g., "google" from "google/gemini-3-pro")
+    parts = invalid_model.split("/", 1)
+    if not parts:
+        return
+    prefix = parts[0] + "/"
+    print("Fetching available %s models..." % parts[0], file=sys.stderr)
+    models = fetch_openrouter_models(prefix)
+    if not models:
+        return
+    print("\nAvailable %s models on OpenRouter:" % parts[0], file=sys.stderr)
+    for m in models:
+        model_id = m.get("id", "")
+        ctx = m.get("context_length", 0)
+        ctx_str = "%dk" % (ctx // 1000) if ctx >= 1000 else str(ctx)
+        print("  openrouter/%s (%s context)" % (model_id, ctx_str),
+              file=sys.stderr)
 
 
 def to_anthropic_tool(tool_schema):
