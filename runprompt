@@ -1298,6 +1298,7 @@ def load_tools(tool_specs, search_paths):
                         continue
                     schema = function_to_tool_schema(func)
                     if schema:
+                        schema['function']['name'] = name
                         tools[name] = {"schema": schema, "func": func}
                         log("Loaded builtin tool: %s" % name)
             else:
@@ -1343,6 +1344,7 @@ def load_tools(tool_specs, search_paths):
                     else:
                         schema = function_to_tool_schema(func)
                         if schema:
+                            schema['function']['name'] = builtin_spec
                             tools[builtin_spec] = {"schema": schema, "func": func}
                             log("Loaded builtin tool: %s" % builtin_spec)
                 else:
@@ -1363,6 +1365,7 @@ def load_tools(tool_specs, search_paths):
                     if callable(obj) and inspect.getdoc(obj):
                         schema = function_to_tool_schema(obj)
                         if schema:
+                            schema['function']['name'] = name
                             tools[name] = {"schema": schema, "func": obj}
                             log("Loaded tool: %s from %s" % (name, module_name))
             except Exception as e:
@@ -1388,6 +1391,7 @@ def load_tools(tool_specs, search_paths):
                     raise TypeError("'%s' is not callable" % func_name)
                 schema = function_to_tool_schema(func)
                 if schema:
+                    schema['function']['name'] = func_name
                     tools[func_name] = {"schema": schema, "func": func}
                     log("Loaded tool: %s from %s" % (func_name, module_name))
             except Exception as e:
