@@ -1005,10 +1005,16 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         log("Error response: %s" % error_body)
         message = extract_error_message(error_body)
         print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
-        # Check if this is an invalid model error from OpenRouter
-        if "is not a valid model" in message.lower() or \
-           "model not found" in message.lower():
-            suggest_openrouter_models(model)
+        # Check if this is an invalid model error and suggest alternatives
+        msg_lower = message.lower()
+        if "is not a valid model" in msg_lower or "model not found" in msg_lower \
+           or "does not exist" in msg_lower or "invalid model" in msg_lower:
+            if "openrouter.ai" in url:
+                suggest_openrouter_models(model)
+            elif "api.openai.com" in url:
+                suggest_openai_models(api_key)
+            elif "generativelanguage.googleapis.com" in url:
+                suggest_googleai_models(api_key)
         sys.exit(1)
 
 
@@ -1148,6 +1154,46 @@ def fetch_openrouter_models(prefix=None):
         return []
 
 
+def fetch_openai_models(api_key):
+    """Fetch available models from OpenAI."""
+    url = "https://api.openai.com/v1/models"
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('Authorization', 'Bearer %s' % api_key)
+        req.add_header('User-Agent', 'runprompt/1.0')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        models = data.get("data", [])
+        # Filter to chat models (gpt-*, o1-*, chatgpt-*)
+        chat_prefixes = ('gpt-', 'o1-', 'o3-', 'chatgpt-')
+        models = [m for m in models if any(
+            m.get("id", "").startswith(p) for p in chat_prefixes)]
+        # Sort alphabetically
+        models.sort(key=lambda m: m.get("id", ""))
+        return models
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+        return []
+
+
+def fetch_googleai_models(api_key):
+    """Fetch available models from Google AI."""
+    url = "https://generativelanguage.googleapis.com/v1beta/models?key=%s" % api_key
+    try:
+        req = urllib.request.Request(url)
+        req.add_header('User-Agent', 'runprompt/1.0')
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        models = data.get("models", [])
+        # Filter to generative models
+        models = [m for m in models if "generateContent" in
+                  m.get("supportedGenerationMethods", [])]
+        # Sort by name
+        models.sort(key=lambda m: m.get("name", ""))
+        return models
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
+        return []
+
+
 def suggest_openrouter_models(invalid_model):
     """Suggest similar OpenRouter models when an invalid model is specified."""
     # Extract provider prefix (e.g., "google" from "google/gemini-3-pro")
@@ -1166,6 +1212,31 @@ def suggest_openrouter_models(invalid_model):
         ctx_str = "%dk" % (ctx // 1000) if ctx >= 1000 else str(ctx)
         print("  openrouter/%s (%s context)" % (model_id, ctx_str),
               file=sys.stderr)
+
+
+def suggest_openai_models(api_key):
+    """Suggest available OpenAI models."""
+    print("Fetching available models...", file=sys.stderr)
+    models = fetch_openai_models(api_key)
+    if not models:
+        return
+    print("\nAvailable OpenAI models:", file=sys.stderr)
+    for m in models:
+        model_id = m.get("id", "")
+        print("  openai/%s" % model_id, file=sys.stderr)
+
+
+def suggest_googleai_models(api_key):
+    """Suggest available Google AI models."""
+    print("Fetching available models...", file=sys.stderr)
+    models = fetch_googleai_models(api_key)
+    if not models:
+        return
+    print("\nAvailable Google AI models:", file=sys.stderr)
+    for m in models:
+        # Model name is like "models/gemini-1.5-pro"
+        name = m.get("name", "").replace("models/", "")
+        print("  googleai/%s" % name, file=sys.stderr)
 
 
 def to_anthropic_tool(tool_schema):
