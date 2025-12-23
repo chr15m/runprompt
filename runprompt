@@ -465,7 +465,8 @@ Examples:
   runprompt -v --save-response out.json hello.prompt
   runprompt --cache hello.prompt
   runprompt --safe-yes tool_prompt.prompt
-  runprompt --read src/*.py review.prompt
+  runprompt --read "src/*.py" review.prompt
+  runprompt --read "*.png" describe.prompt
   runprompt --read README.md --read "src/**/*.py" analyze.prompt
   OPENAI_BASE_URL=http://localhost:11434/v1 runprompt hello.prompt
 
