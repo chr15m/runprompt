@@ -2107,18 +2107,29 @@ def fetch_clean(url: str):
 fetch_clean.safe = True
 
 
+def _slugify_filename_for_tool(path: str):
+    """Return a slug suitable for tool naming from a file path."""
+    filename = os.path.basename(path).lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", filename)
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug or "file"
+
+
 def write_file(path: str):
     """Factory that creates a file writer tool for a specific path.
 
     Usage in prompt: builtin.write_file('hello.txt')
     """
+    tool_suffix = _slugify_filename_for_tool(path)
+    tool_name = "write_file_%s" % tool_suffix
+
     def writer(content: str):
         """Write content to the file."""
         with open(path, 'w') as f:
             f.write(content)
         return "Wrote %d bytes to %s" % (len(content), path)
     writer.__doc__ = "Write content to %s." % path
-    writer.tool_name = "write_file"
+    writer.tool_name = tool_name
     return writer
 
 

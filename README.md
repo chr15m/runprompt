@@ -321,7 +321,11 @@ tools:
 Write a haiku about coding to the file.
 ```
 
-The `write_file('output.txt')` creates a tool that can only write to `output.txt`. The LLM provides the content, but cannot choose the path - this is a security feature that limits what files the LLM can modify.
+The `write_file('output.txt')` creates a tool that can only write to
+`output.txt`. The LLM provides the content, but cannot choose the path - this
+is a security feature that limits what files the LLM can modify. The created
+tool is exposed to the LLM with a filename-specific name (slug), e.g.
+`write_file_output_txt`.
 
 Use `builtin.*` to import all builtin tools, or `builtin.tool_name` for a specific one.
 

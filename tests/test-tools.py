@@ -545,8 +545,9 @@ def test_builtin_write_file_factory():
         tools = body.get('tools', [])
         assert len(tools) == 1, "Expected exactly 1 tool, got %d" % len(tools)
         func = tools[0]['function']
-        assert func['name'] == 'write_file', \
-            "Expected tool name 'write_file', got '%s'" % func['name']
+        assert func['name'] == 'write_file_test_output_txt', \
+            "Expected tool name 'write_file_test_output_txt', got '%s'" % \
+            func['name']
         assert 'test_output.txt' in func['description'], \
             "Expected path in description"
         # Should have 'content' parameter, not 'path'
@@ -578,7 +579,7 @@ def test_builtin_write_file_execution():
                             "id": "call_write",
                             "type": "function",
                             "function": {
-                                "name": "write_file",
+                                "name": "write_file_test_write_txt",
                                 "arguments": '{"content": "Hello from LLM!"}'
                             }
                         }]
