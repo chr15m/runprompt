@@ -2134,10 +2134,20 @@ def datetime_now():
 datetime_now.safe = True
 
 
+def sleep(seconds: float):
+    """Sleep for the specified number of seconds."""
+    time.sleep(seconds)
+    return "Slept for %s second(s)" % seconds
+
+
+sleep.safe = True
+
+
 BUILTIN_TOOLS = {
     "calculator": calculator,
     "datetime": datetime_now,
     "fetch_clean": fetch_clean,
+    "sleep": sleep,
     "write_file": write_file,
 }
 
