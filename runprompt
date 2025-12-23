@@ -1004,7 +1004,15 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         error_body = e.read().decode("utf-8")
         log("Error response: %s" % error_body)
         message = extract_error_message(error_body)
-        print("%s%s%s" % (RED, message, RESET), file=sys.stderr)
+
+        req_preview = data[:200].decode("utf-8", errors="replace")
+        req_preview = req_preview.replace("\r", " ").replace("\n", " ")
+
+        print("%sLLM request failed (model=%s): %s%s" %
+              (RED, model, message, RESET), file=sys.stderr)
+        print("%sRequest preview: %s%s" %
+              (YELLOW, req_preview, RESET), file=sys.stderr)
+
         # Check if this is an invalid model error and suggest alternatives
         msg_lower = message.lower()
         if "is not a valid model" in msg_lower or "model not found" in msg_lower \
