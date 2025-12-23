@@ -2154,11 +2154,27 @@ def sleep(seconds: float):
 sleep.safe = True
 
 
+def ask_user(question: str):
+    """Ask the user a question and return their response.
+
+    This tool reads from the user's terminal (TTY). If no TTY is available, it
+    raises an error.
+    """
+    response = read_tty_line("%s " % question)
+    if response is None:
+        raise RuntimeError("No TTY available for user input")
+    return response
+
+
+ask_user.safe = True
+
+
 BUILTIN_TOOLS = {
     "calculator": calculator,
     "datetime": datetime_now,
     "fetch_clean": fetch_clean,
     "sleep": sleep,
+    "ask_user": ask_user,
     "write_file": write_file,
 }
 
