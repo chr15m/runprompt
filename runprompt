@@ -1371,7 +1371,9 @@ def load_tools(tool_specs, search_paths):
                     if name.startswith("_"):
                         continue
                     obj = getattr(module, name)
-                    if callable(obj) and inspect.getdoc(obj):
+                    if (inspect.isfunction(obj) and
+                            obj.__module__ == module.__name__ and
+                            inspect.getdoc(obj)):
                         schema = function_to_tool_schema(obj)
                         if schema:
                             schema['function']['name'] = name
