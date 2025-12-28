@@ -143,6 +143,35 @@ echo '{"name": "Alice"}' | ./runprompt hello.prompt
 
 See `--help` for all options.
 
+### File attachments
+
+Attach local files (supports globs) and URLs to the prompt context.
+
+From frontmatter:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+files:
+  - README.md
+  - src/**/*.py
+---
+Review these files and suggest improvements.
+```
+
+From the CLI (also supports globs). `--file` is an alias for `--read`:
+
+```bash
+./runprompt --read README.md --read "src/**/*.py" review.prompt
+./runprompt --file README.md review.prompt
+```
+
+You can combine both: frontmatter `files:` entries plus any `--read/--file`
+flags are all included.
+
+When attachments are loaded, `runprompt` prints a yellow message to stderr for
+each loaded file/URL.
+
 ## Tools
 
 Tools allow the LLM to call Python functions during prompt execution. Define tools as Python functions with docstrings, and the LLM can use them to perform actions like reading files, making API calls, or interacting with the system.
