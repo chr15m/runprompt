@@ -151,6 +151,81 @@ def test_read_single_file():
         server.shutdown()
 
 
+def test_files_frontmatter_single_file():
+    """Test reading a single file via frontmatter 'files:'."""
+    server = start_server(MOCK_PORT + 14)
+    temp_dir = tempfile.mkdtemp()
+    try:
+        prompt_file = os.path.join(temp_dir, "frontmatter-files.prompt")
+        with open(prompt_file, "w") as f:
+            f.write("""---
+model: openai/gpt-4o
+files:
+  - README.md
+---
+Say hello to {{name}}!
+""")
+
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 14)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', prompt_file],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        assert len(MockHandler.received_requests) == 1, "Expected 1 request"
+        content = get_user_content(MockHandler.received_requests[0])
+        content_str = json.dumps(content)
+        assert 'README.md' in content_str, "Expected README.md in content"
+        assert '# runprompt' in content_str, "Expected README content"
+    finally:
+        server.shutdown()
+        shutil.rmtree(temp_dir)
+
+
+def test_files_frontmatter_and_cli_combined():
+    """Test that frontmatter 'files:' and CLI --read are combined."""
+    server = start_server(MOCK_PORT + 15)
+    temp_dir = tempfile.mkdtemp()
+    try:
+        prompt_file = os.path.join(temp_dir, "frontmatter-files-and-cli.prompt")
+        with open(prompt_file, "w") as f:
+            f.write("""---
+model: openai/gpt-4o
+files:
+  - README.md
+---
+Say hello to {{name}}!
+""")
+
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 15)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--read', 'runprompt', prompt_file],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        assert len(MockHandler.received_requests) == 1, "Expected 1 request"
+        content = get_user_content(MockHandler.received_requests[0])
+        content_str = json.dumps(content)
+        assert 'README.md' in content_str, "Expected README.md in content"
+        assert '# runprompt' in content_str, "Expected README content"
+        assert 'runprompt' in content_str, "Expected runprompt in content"
+        assert 'Single-file utility for running .prompt scripts.' in content_str, \
+            "Expected runprompt file content"
+    finally:
+        server.shutdown()
+        shutil.rmtree(temp_dir)
+
+
 def test_read_multiple_files():
     """Test reading multiple files with multiple --read flags."""
     server = start_server(MOCK_PORT + 1)
@@ -505,6 +580,8 @@ def test_read_url_deduplication():
 
 if __name__ == '__main__':
     test("read single file", test_read_single_file)
+    test("files frontmatter single file", test_files_frontmatter_single_file)
+    test("files frontmatter and CLI combined", test_files_frontmatter_and_cli_combined)
     test("read multiple files", test_read_multiple_files)
     test("read glob pattern", test_read_glob_pattern)
     test("read nonexistent file warning", test_read_nonexistent_file_warning)

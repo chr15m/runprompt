@@ -296,10 +296,21 @@ def main():
     else:
         effective_provider = provider
 
-    # Read files from --read flags
-    read_files = []
+    read_patterns = []
+    if meta.get("files") is not None:
+        if not isinstance(meta.get("files"), list):
+            print("%sError: 'files' frontmatter must be a list%s" %
+                  (RED, RESET), file=sys.stderr)
+            sys.exit(1)
+        read_patterns.extend(meta.get("files") or [])
+
     if args.read:
-        read_files = read_files_for_context(args.read, effective_provider)
+        read_patterns.extend(args.read)
+
+    # Read files from --read flags and prompt frontmatter
+    read_files = []
+    if read_patterns:
+        read_files = read_files_for_context(read_patterns, effective_provider)
         log("Read %d file(s) for context" % len(read_files))
 
     if provider == "test":
