@@ -494,7 +494,8 @@ def parse_args(args):
                         help="Use custom OpenAI-compatible endpoint")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
-    parser.add_argument("--read", action="append", default=[], metavar="FILE",
+    parser.add_argument("--read", "--file", action="append", default=[],
+                        metavar="FILE",
                         help="Read file(s) into context (supports globs)")
     parsed, unknown = parser.parse_known_args(args)
     # Parse unknown args for --key=value overrides and extra positional args
