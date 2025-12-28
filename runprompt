@@ -1772,6 +1772,8 @@ def read_files_for_context(patterns, provider=None):
                     "is_url": True,
                     "mime_type": mime_type,
                 })
+                print("%sLoaded URL: %s%s" % (YELLOW, pattern, RESET),
+                      file=sys.stderr)
                 log("URL (no download): %s (%s)" % (pattern, mime_type))
             else:
                 # Download for anthropic, openai, googleai, etc.
@@ -1789,6 +1791,8 @@ def read_files_for_context(patterns, provider=None):
                         "is_url": True,
                         "mime_type": mime_type,
                     })
+                    print("%sLoaded URL: %s%s" % (YELLOW, pattern, RESET),
+                          file=sys.stderr)
                     log("Downloaded URL: %s (%s)" % (pattern, mime_type))
                 except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
                     print("%sWarning: Cannot fetch '%s': %s%s" %
@@ -1824,6 +1828,8 @@ def read_files_for_context(patterns, provider=None):
                     "is_url": False,
                     "mime_type": get_mime_type(path),
                 })
+                print("%sLoaded file: %s%s" % (YELLOW, path, RESET),
+                      file=sys.stderr)
                 log("Read file: %s (%s)" %
                     (path, "binary" if is_binary else "text"))
             except (IOError, OSError) as e:
