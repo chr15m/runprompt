@@ -57,6 +57,7 @@ PROVIDERS = {
 
 RED = "\033[31m"
 YELLOW = "\033[33m"
+CYAN = "\033[36m"
 RESET = "\033[0m"
 TIMEOUT = 120
 
@@ -1548,8 +1549,15 @@ def execute_tool(tool_func, args):
 
 
 def prompt_user_for_tool(tool_name, args):
+    prompt_text = "Run this tool? [Y/n]: "
     while True:
-        response = read_tty_line("Run this tool? [Y/n]: ")
+        if (tool_name == "shell" and isinstance(args, dict) and
+                isinstance(args.get("command"), str)):
+            sys.stderr.write("%s%s%s\n" % (CYAN, args.get("command"), RESET))
+            sys.stderr.flush()
+
+        response = read_tty_line(prompt_text)
+
         if response is None:
             return True
         if response == "" or response.lower() in ("y", "yes"):
@@ -2189,12 +2197,34 @@ def ask_user(question: str):
 ask_user.safe = True
 
 
+def shell(command: str, timeout: float = 30):
+    """Run a shell command and return stdout/stderr/returncode.
+
+    This tool executes the command using /bin/bash -lc. It is intentionally not
+    marked safe.
+    """
+    import subprocess
+    completed = subprocess.run(
+        ["/bin/bash", "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return {
+        "command": command,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
 BUILTIN_TOOLS = {
     "calculator": calculator,
     "datetime": datetime_now,
     "fetch_clean": fetch_clean,
     "sleep": sleep,
     "ask_user": ask_user,
+    "shell": shell,
     "write_file": write_file,
 }
 

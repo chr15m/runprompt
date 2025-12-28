@@ -334,9 +334,10 @@ Available builtin tools:
 | `datetime` | Return current date and time in ISO format (YYYY-MM-DDTHH:MM:SS) |
 | `sleep` | Sleep for the specified number of seconds |
 | `ask_user` | Ask the user a question and return their response |
+| `shell` | Run a shell command and return stdout/stderr/returncode |
 | `write_file('path')` | Write content to a specific file (parameterized) |
 
-The `calculator`, `datetime`, `fetch_clean`, `sleep`, and `ask_user` tools are marked as safe (auto-approved with `--safe-yes`). The `write_file` tool requires confirmation since it modifies the filesystem.
+The `calculator`, `datetime`, `fetch_clean`, `sleep`, and `ask_user` tools are marked as safe (auto-approved with `--safe-yes`). The `shell` and `write_file` tools require confirmation since they can run commands / modify the filesystem.
 
 ### Parameterized tools
 
