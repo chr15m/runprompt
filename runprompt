@@ -57,6 +57,7 @@ PROVIDERS = {
 
 RED = "\033[31m"
 YELLOW = "\033[33m"
+GREEN = "\033[32m"
 CYAN = "\033[36m"
 RESET = "\033[0m"
 TIMEOUT = 120
@@ -2188,10 +2189,50 @@ def ask_user(question: str):
     This tool reads from the user's terminal (TTY). If no TTY is available, it
     raises an error.
     """
-    response = read_tty_line("%s " % question)
-    if response is None:
-        raise RuntimeError("No TTY available for user input")
-    return response
+    try:
+        import readline  # noqa: F401
+    except ImportError:
+        pass
+
+    tty = None
+    original_stdin = None
+    if not sys.stdin.isatty():
+        try:
+            tty = open("/dev/tty", "r")
+        except (IOError, OSError):
+            tty = None
+        if tty is None:
+            raise RuntimeError("No TTY available for user input")
+        original_stdin = sys.stdin
+        sys.stdin = tty
+
+    try:
+        sys.stderr.write("%s\n" % question)
+        sys.stderr.flush()
+
+        original_stdout = None
+        if sys.stdout is not sys.stderr:
+            original_stdout = sys.stdout
+            sys.stdout = sys.stderr
+
+        prompt = "\001%s\002> " % GREEN
+
+        try:
+            response = input(prompt)
+        except EOFError:
+            response = ""
+        finally:
+            sys.stderr.write(RESET)
+            sys.stderr.flush()
+            if original_stdout is not None:
+                sys.stdout = original_stdout
+
+        return response
+    finally:
+        if original_stdin is not None:
+            sys.stdin = original_stdin
+        if tty is not None:
+            tty.close()
 
 
 ask_user.safe = True
