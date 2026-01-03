@@ -1935,6 +1935,9 @@ def build_content_with_files(prompt, files, provider):
                 # Handle bytes content from URL downloads
                 if isinstance(file_content, bytes):
                     file_content = file_content.decode('utf-8', errors='replace')
+                # Use placeholder for empty files
+                if not file_content or not file_content.strip():
+                    file_content = "[EMPTY FILE]"
                 content.append({"type": "text", "text": file_content})
             else:
                 content.append({"type": "text", "text": "[Content not available]"})
