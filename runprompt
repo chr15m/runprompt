@@ -588,16 +588,48 @@ def _parse_yaml_minimal(s):
     stack = [(result, -1)]
     current_list = None
     current_list_indent = -1
-    for line in s.split("\n"):
+    current_multiline = None
+    current_multiline_indent = -1
+    current_multiline_base_indent = -1
+    lines = s.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if not line.strip() or line.strip().startswith("#"):
+            i += 1
             continue
         indent = len(line) - len(line.lstrip())
+        
+        # Handle multiline string continuation
+        if current_multiline is not None:
+            if indent > current_multiline_indent or not line.strip():
+                # First content line - establish base indent
+                if current_multiline_base_indent == -1 and line.strip():
+                    current_multiline_base_indent = indent
+                # Continuation of multiline string
+                if line.strip():
+                    current_multiline["lines"].append(line[current_multiline_base_indent:])
+                else:
+                    current_multiline["lines"].append("")
+                i += 1
+                continue
+            else:
+                # End of multiline string
+                parent = current_multiline["parent"]
+                key = current_multiline["key"]
+                parent[key] = "\n".join(current_multiline["lines"])
+                current_multiline = None
+                current_multiline_indent = -1
+                current_multiline_base_indent = -1
+                # Don't increment i, process this line normally
+        
         # Check if this is a list item
         list_match = re.match(r"^(\s*)-\s*(.*)", line)
         if list_match:
             item_value = list_match.group(2).strip()
             if current_list is not None and indent >= current_list_indent:
                 current_list.append(parse_yaml_value(item_value) if item_value else item_value)
+                i += 1
                 continue
         # Not a list item - reset list tracking if we've dedented
         if current_list is not None and indent <= current_list_indent:
@@ -610,10 +642,25 @@ def _parse_yaml_minimal(s):
             stack = [(result, -1)]
         match = re.match(r"^(\s*)([^:]+):\s*(.*)", line)
         if not match:
+            i += 1
             continue
         key = match.group(2).strip()
         value = match.group(3).strip()
         parent = stack[-1][0]
+        
+        # Check for multiline string indicator (| or >)
+        if value in ("|", ">"):
+            current_multiline = {
+                "parent": parent,
+                "key": key,
+                "lines": [],
+                "style": value
+            }
+            current_multiline_indent = indent
+            current_multiline_base_indent = -1
+            i += 1
+            continue
+        
         if value:
             parent[key] = parse_yaml_value(value)
             # Reset list tracking when we have a value
@@ -621,11 +668,9 @@ def _parse_yaml_minimal(s):
             current_list_indent = -1
         else:
             # Check if next non-empty line is a list item
-            remaining_lines = s.split("\n")
-            line_idx = remaining_lines.index(line) if line in remaining_lines else -1
             is_list_parent = False
-            if line_idx >= 0:
-                for next_line in remaining_lines[line_idx + 1:]:
+            if i + 1 < len(lines):
+                for next_line in lines[i + 1:]:
                     if not next_line.strip() or next_line.strip().startswith("#"):
                         continue
                     next_indent = len(next_line) - len(next_line.lstrip())
@@ -643,6 +688,15 @@ def _parse_yaml_minimal(s):
                 stack.append((parent[key], indent))
                 current_list = None
                 current_list_indent = -1
+        i += 1
+    
+    # Handle any remaining multiline string
+    if current_multiline is not None:
+        parent = current_multiline["parent"]
+        key = current_multiline["key"]
+        parent[key] = "\n".join(current_multiline["lines"])
+        current_multiline_base_indent = -1
+    
     return result
 
 
@@ -673,6 +727,9 @@ def parse_yaml_value(s):
         parsed = parse_yaml(s)
         if parsed:
             return parsed
+    # Strip surrounding quotes (single or double) to match PyYAML behavior
+    if len(s) >= 2 and s[0] in ('"', "'") and s[-1] == s[0]:
+        return s[1:-1]
     return s
 
 
