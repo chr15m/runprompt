@@ -243,6 +243,12 @@ def main():
             if input_schema:
                 first_key = list(input_schema.keys())[0]
                 variables[first_key] = args_str
+    
+    # Execute before: shell commands if present
+    before_commands = meta.get("before", {})
+    if before_commands:
+        execute_before_commands(before_commands, variables)
+    
     validate_required_inputs(meta, variables)
     prompt = render_template(template, variables)
     log("Rendered prompt: %s" % prompt)
@@ -305,7 +311,11 @@ def main():
             print("%sError: 'files' frontmatter must be a list%s" %
                   (RED, RESET), file=sys.stderr)
             sys.exit(1)
-        read_patterns.extend(meta.get("files") or [])
+        # Render template variables in files: patterns
+        raw_patterns = meta.get("files") or []
+        for pattern in raw_patterns:
+            rendered_pattern = render_template(pattern, variables)
+            read_patterns.append(rendered_pattern)
 
     if args.read:
         read_patterns.extend(args.read)
@@ -1953,6 +1963,62 @@ def build_content_with_files(prompt, files, provider):
     # Add the main prompt
     content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
     return content
+
+
+# === BEFORE COMMANDS ===
+
+
+def execute_before_commands(before_commands, variables):
+    """Execute shell commands from before: frontmatter and add outputs to variables."""
+    import subprocess
+    
+    if not isinstance(before_commands, dict):
+        print("%sError: 'before' must be a dict of name: command pairs%s" %
+              (RED, RESET), file=sys.stderr)
+        sys.exit(1)
+    
+    # Build environment with current variables
+    env = os.environ.copy()
+    for key, value in variables.items():
+        env[key] = str(value)
+    
+    # Use user's configured shell, fallback to /bin/sh
+    shell = env.get("SHELL", "/bin/sh")
+    
+    before_outputs = []
+    for name, command in before_commands.items():
+        log("Running before command '%s': %s" % (name, command))
+        try:
+            result = subprocess.run(
+                [shell, "-c", command],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if result.returncode == 0:
+                output = result.stdout.rstrip('\n')
+                variables[name] = output
+                before_outputs.append(output)
+                log("Command '%s' succeeded: %s" % (name, output[:100]))
+            else:
+                error = result.stderr.rstrip('\n')
+                variables[name] = error
+                before_outputs.append(error)
+                log("Command '%s' failed: %s" % (name, error[:100]))
+        except subprocess.TimeoutExpired:
+            error = "Command timed out after 30 seconds"
+            variables[name] = error
+            before_outputs.append(error)
+            log("Command '%s' timed out" % name)
+        except Exception as e:
+            error = str(e)
+            variables[name] = error
+            before_outputs.append(error)
+            log("Command '%s' error: %s" % (name, error))
+    
+    # Add combined BEFORE variable
+    variables["BEFORE"] = "\n".join(before_outputs)
 
 
 # === BUILTIN TOOLS ===

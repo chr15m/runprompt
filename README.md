@@ -106,6 +106,36 @@ echo "John is 30" | ./runprompt extract.prompt | ./runprompt generate-bio.prompt
 
 The JSON output from the first prompt becomes template variables in the second.
 
+### Pre-prompt shell commands
+
+Execute shell commands before the prompt is sent to gather dynamic context:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+before:
+  latest_commit: git log -1 --oneline
+  current_date: date
+  file_count: find . -name "*.py" | wc -l
+---
+Latest commit: {{latest_commit}}
+Current date: {{current_date}}
+Python files: {{file_count}}
+```
+
+Each command runs in your configured shell (`$SHELL`, defaulting to `/bin/sh`) with full shell features (pipes, redirects, etc.). On success, stdout is captured. On failure, stderr is captured. All outputs are available as individual variables plus a combined `{{BEFORE}}` variable.
+
+Template variables are passed as environment variables to the shell, so you can reference them:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+before:
+  model_info: echo "Using model: ${model}"
+---
+{{model_info}}
+```
+
 ### Executable prompt files
 
 Make `.prompt` files directly executable with a shebang:
@@ -157,6 +187,19 @@ files:
   - src/**/*.py
 ---
 Review these files and suggest improvements.
+```
+
+You can use template variables (including `before:` outputs) in file patterns:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+before:
+  changed_files: git diff --name-only HEAD~1
+files:
+  - "{{changed_files}}"
+---
+Review the recently changed files.
 ```
 
 From the CLI (also supports globs). `--file` is an alias for `--read`:
@@ -380,7 +423,17 @@ Use `_` prefix for helper functions you don't want exposed as tools.
 
 ## Template syntax
 
-Templates use a useful subset of [Handlebars/Mustache syntax](https://google.github.io/dotprompt/reference/template/). Supported features:
+Templates use a useful subset of [Handlebars/Mustache syntax](https://google.github.io/dotprompt/reference/template/).
+
+### Special variables
+
+- `{{STDIN}}` - Raw stdin content (always available)
+- `{{ARGS}}` - Command line arguments after prompt file (always available)
+- `{{INPUT}}` - STDIN if provided, otherwise ARGS (always available)
+- `{{BEFORE}}` - Combined output from all `before:` commands
+- Individual variables from `before:` commands (e.g. `{{latest_commit}}`)
+
+### Supported features
 
 - Variable interpolation: `{{variableName}}`, `{{object.property}}`
 - Comments: `{{! this is a comment }}`
