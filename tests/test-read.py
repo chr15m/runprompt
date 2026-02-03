@@ -206,7 +206,7 @@ Say hello to {{name}}!
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 15)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'runprompt', prompt_file],
+            ['./runprompt', '--read', 'LICENSE', prompt_file],
             capture_output=True,
             text=True,
             env=env,
@@ -218,9 +218,9 @@ Say hello to {{name}}!
         content_str = json.dumps(content)
         assert 'README.md' in content_str, "Expected README.md in content"
         assert '# runprompt' in content_str, "Expected README content"
-        assert 'runprompt' in content_str, "Expected runprompt in content"
-        assert 'Single-file utility for running .prompt scripts.' in content_str, \
-            "Expected runprompt file content"
+        assert 'LICENSE' in content_str, "Expected LICENSE in content"
+        assert 'Permission is hereby granted' in content_str, \
+            "Expected LICENSE file content"
     finally:
         server.shutdown()
         shutil.rmtree(temp_dir)
