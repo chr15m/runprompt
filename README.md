@@ -18,14 +18,14 @@ chmod +x runprompt
 Or you can run it directly without installing using `uvx`:
 
 ```bash
-uvx --from github.com/chr15m/runprompt runprompt hello.prompt
+uvx --from git+https://github.com/chr15m/runprompt runprompt hello.prompt
 ```
 
 Or install it via `pip` or `uv` to use it as a library:
 
 ```bash
 # Using uv (recommended)
-uv pip install github.com/chr15m/runprompt
+uv pip install git+https://github.com/chr15m/runprompt
 
 # Using pip
 pip install "git+https://github.com/chr15m/runprompt.git"
