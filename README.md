@@ -8,9 +8,27 @@ Run LLM [.prompt](https://google.github.io/dotprompt/) files from your shell wit
 
 ## Quick start
 
+Download the single-file script:
+
 ```bash
 curl -O https://raw.githubusercontent.com/chr15m/runprompt/main/runprompt
 chmod +x runprompt
+```
+
+Or you can run it directly without installing using `uvx`:
+
+```bash
+uvx --from github.com/chr15m/runprompt runprompt hello.prompt
+```
+
+Or install it via `pip` or `uv` to use it as a library:
+
+```bash
+# Using uv (recommended)
+uv pip install github.com/chr15m/runprompt
+
+# Using pip
+pip install "git+https://github.com/chr15m/runprompt.git"
 ```
 
 Create `hello.prompt`:
@@ -620,4 +638,19 @@ This is a minimal implementation of the [Dotprompt specification](https://google
 - Partials (`{{>partialName}}`)
 - Nested Picoschema (objects, arrays of objects, enums)
 
-The YAML parser is a minimal implementation that handles only the subset of YAML needed for Dotprompt frontmatter (simple key-value pairs, nested objects, and lists). It will likely fail on complex YAML features like anchors, multi-line strings, or flow syntax. If [PyYAML](https://pyyaml.org/) is installed (`pip install pyyaml`), it will be used instead for full YAML support.
+The YAML parser is a minimal implementation that handles only the subset of YAML needed for Dotprompt frontmatter (simple key-value pairs, nested objects, and lists). It will likely fail on complex YAML features like anchors, multi-line strings, or flow syntax. See optional dependencies below to use pyyaml instead.
+
+### Optional dependencies
+
+You can install optional dependencies for enhanced features:
+
+- `pyyaml`: For full YAML spec support in frontmatter.
+- `playwright`: For high-quality web scraping via the `builtin.fetch_clean` tool.
+
+If you installed via `pip` or `uv`, you can get these with:
+
+```bash
+pip install "runprompt[full] @ git+https://github.com/chr15m/runprompt.git"
+```
+
+If [PyYAML](https://pyyaml.org/) is installed, it will be used automatically instead of the minimal internal parser.
