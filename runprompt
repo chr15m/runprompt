@@ -1955,6 +1955,15 @@ def build_media_block(file_info, provider):
     
     b64_data = base64.b64encode(content).decode('ascii')
     if provider == "anthropic":
+        if mime_type.startswith("audio/"):
+            return {
+                "type": "audio",
+                "source": {
+                    "type": "base64",
+                    "media_type": mime_type,
+                    "data": b64_data,
+                }
+            }
         if mime_type == "application/pdf":
             return {
                 "type": "document",
@@ -1974,6 +1983,19 @@ def build_media_block(file_info, provider):
         }
     else:
         # OpenAI format (also used by Google AI compat layer, OpenRouter)
+        if mime_type.startswith("audio/"):
+            # OpenAI / OpenRouter format
+            audio_format = "mp3"
+            if "wav" in mime_type:
+                audio_format = "wav"
+            return {
+                "type": "input_audio",
+                "input_audio": {
+                    "data": b64_data,
+                    "format": audio_format
+                }
+            }
+
         data_url = "data:%s;base64,%s" % (mime_type, b64_data)
         if mime_type.startswith("image/"):
             return {"type": "image_url", "image_url": {"url": data_url}}
