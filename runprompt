@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Single-file utility for running .prompt scripts."""
+"""
+runprompt: A single-file runner for .prompt (Dotprompt) files.
+
+This utility parses .prompt files containing YAML frontmatter and Handlebars
+templates, executes pre-processing shell commands, attaches file context,
+and manages LLM interactions with support for tool calling and caching.
+
+Key Functions:
+- main(): Entry point handling CLI arguments and the execution loop.
+- render_template(): A subset of Handlebars for dynamic prompt generation.
+- load_tools(): Dynamically imports Python and builtin functions as LLM tools.
+- make_request(): Handles API communication across multiple providers.
+- get_conf(): Implements the configuration priority cascade.
+"""
 import sys
 import os
 import json
