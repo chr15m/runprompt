@@ -34,6 +34,8 @@ run_test "cache tests" python3 tests/test-cache.py
 
 run_test "tools tests" python3 tests/test-tools.py
 
+run_test "shell tools tests" python3 tests/test-shell-tools.py
+
 run_test "required inputs tests" python3 tests/test-required-inputs.py
 
 run_test "read file tests" python3 tests/test-read.py

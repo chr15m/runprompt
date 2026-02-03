@@ -355,6 +355,53 @@ FileNotFoundError: [Errno 2] No such file or directory: 'missing.txt'
 I couldn't read that file because it doesn't exist. Would you like me to try a different path?
 ```
 
+### Shell tools
+
+Define simple shell script tools inline in your prompt:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+shell_tools:
+  git_status: git status --short
+  count_py_files: find . -name "*.py" | wc -l
+---
+What's the current git status and how many Python files are there?
+```
+
+**Long form with options:**
+
+```yaml
+shell_tools:
+  git_log:
+    cmd: git log --oneline
+    safe: true
+    description: Show recent git commits
+  search_code:
+    cmd: grep -r
+    safe: true
+    description: Search for text in files
+```
+
+**Fields:**
+- `cmd` (required): The shell command to execute
+- `safe` (optional, default: false): Mark as safe for auto-approval with `--safe-yes`
+- `description` (optional, default: cmd): Description shown to the LLM
+
+**Arguments:**
+
+The LLM can pass:
+- `args` (string): Appended to the command
+- Environment variables as named parameters
+
+Example LLM call:
+```
+git_log(args="--author=alice -n 5")
+search_code(args="TODO", PATH="/src")
+```
+
+Shell tools use the same shell resolution as `before:` commands (`$SHELL`, defaulting to `/bin/sh`).
+
 ### Builtin tools
 
 Runprompt includes builtin tools that can be used without creating external Python files:

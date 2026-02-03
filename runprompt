@@ -297,6 +297,13 @@ def main():
     if tool_specs:
         tools = load_tools(tool_specs, search_paths)
         log("Loaded %d tools: %s" % (len(tools), list(tools.keys())))
+    
+    # Load shell_tools
+    shell_tool_specs = meta.get("shell_tools", {})
+    if shell_tool_specs:
+        shell_tools = load_shell_tools(shell_tool_specs)
+        tools.update(shell_tools)
+        log("Loaded %d shell tools: %s" % (len(shell_tools), list(shell_tools.keys())))
 
     # Determine effective provider early for file reading
     base_url = get_conf("base_url") or get_base_url()
@@ -1382,6 +1389,90 @@ def build_tool_result_message(tool_call, result, error, provider):
 
 
 # === TOOL LOADING & SCHEMA ===
+
+
+def load_shell_tools(shell_tool_specs):
+    """Load shell script tools from shell_tools: frontmatter."""
+    tools = {}
+    
+    for name, spec in shell_tool_specs.items():
+        # Handle short form: name: "command"
+        if isinstance(spec, str):
+            cmd = spec
+            safe = False
+            description = cmd
+        # Handle long form: name: {cmd: ..., safe: ..., description: ...}
+        elif isinstance(spec, dict):
+            cmd = spec.get("cmd")
+            if not cmd:
+                print("%sWarning: shell_tool '%s' missing 'cmd' field%s" %
+                      (YELLOW, name, RESET), file=sys.stderr)
+                continue
+            safe = spec.get("safe", False)
+            description = spec.get("description", cmd)
+        else:
+            print("%sWarning: shell_tool '%s' has invalid spec%s" %
+                  (YELLOW, name, RESET), file=sys.stderr)
+            continue
+        
+        # Create the tool function
+        func = create_shell_tool(name, cmd, description, safe)
+        schema = function_to_tool_schema(func)
+        if schema:
+            schema['function']['name'] = name
+            tools[name] = {"schema": schema, "func": func}
+            log("Loaded shell tool: %s" % name)
+    
+    return tools
+
+
+def create_shell_tool(name, cmd, description, safe):
+    """Create a shell tool function with the given command."""
+    def shell_tool(args: str = "", **env_vars):
+        """Execute shell command with optional args and environment variables."""
+        import subprocess
+        
+        # Build environment with provided env vars
+        env = os.environ.copy()
+        for key, value in env_vars.items():
+            env[key] = str(value)
+        
+        # Build full command
+        full_cmd = cmd
+        if args:
+            full_cmd = "%s %s" % (cmd, args)
+        
+        # Use user's configured shell, fallback to /bin/sh
+        shell = env.get("SHELL", "/bin/sh")
+        
+        log("Running shell tool '%s': %s" % (name, full_cmd))
+        try:
+            result = subprocess.run(
+                [shell, "-c", full_cmd],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if result.returncode == 0:
+                return result.stdout.rstrip('\n')
+            else:
+                return {
+                    "returncode": result.returncode,
+                    "stdout": result.stdout.rstrip('\n'),
+                    "stderr": result.stderr.rstrip('\n'),
+                }
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Command timed out after 30 seconds")
+        except Exception as e:
+            raise RuntimeError("Command failed: %s" % str(e))
+    
+    # Set docstring and metadata
+    shell_tool.__doc__ = description
+    shell_tool.safe = safe
+    shell_tool.__name__ = name
+    
+    return shell_tool
 
 
 def load_tools(tool_specs, search_paths):
