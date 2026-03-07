@@ -484,6 +484,7 @@ Environment:
   OPENAI_API_KEY          API key for OpenAI models
   GOOGLE_API_KEY          API key for Google AI models
   OPENROUTER_API_KEY      API key for OpenRouter models
+  OLLAMA_BASE_URL         Custom Ollama endpoint URL (e.g. http://localhost:11434/v1)
   OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
   OPENAI_API_BASE         Custom endpoint URL (legacy OpenAI SDK v0.x style)
   BASE_URL                Custom endpoint URL (fallback)
@@ -982,7 +983,8 @@ def parse_model_string(model_str):
 
 def get_base_url():
     """Get base URL from legacy env vars (fallback after config cascade)."""
-    return (os.environ.get("OPENAI_BASE_URL") or
+    return (os.environ.get("OLLAMA_BASE_URL") or
+            os.environ.get("OPENAI_BASE_URL") or
             os.environ.get("OPENAI_API_BASE") or
             os.environ.get("BASE_URL"))
 

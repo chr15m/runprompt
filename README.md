@@ -578,6 +578,7 @@ export RUNPROMPT_BASE_URL="http://localhost:11434/v1"
 ./runprompt --base-url http://localhost:11434/v1 hello.prompt
 
 # Legacy env vars also work (checked in this order)
+export OLLAMA_BASE_URL="http://localhost:11434/v1"
 export OPENAI_BASE_URL="http://localhost:11434/v1"
 export OPENAI_API_BASE="http://localhost:11434/v1"  # OpenAI SDK v0.x style
 export BASE_URL="http://localhost:11434/v1"
