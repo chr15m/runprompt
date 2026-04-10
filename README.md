@@ -175,7 +175,7 @@ Note: `runprompt` must be in your PATH, or use a relative/absolute path in the s
 
 ### Interactive chat mode
 
-Use the `--chat` flag to start an interactive conversation with the LLM. The conversation history is maintained across turns.
+Use the `--chat` flag, `RUNPROMPT_CHAT=1` env var, or `chat: true` in the prompt frontmatter to start an interactive conversation with the LLM. The conversation history is maintained across turns.
 
 Start a chat with a prompt file to set the initial context or persona:
 
@@ -549,6 +549,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | Cache dir | `cache_dir: /path` | `RUNPROMPT_CACHE_DIR` | `--cache-dir` |
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
+| Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
 
 ### API keys
 

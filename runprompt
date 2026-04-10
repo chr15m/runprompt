@@ -47,7 +47,7 @@ CONFIG = {
 CONFIG_KEYS = {
     "model", "default_model", "tool_path", "base_url", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
-    "google_api_key", "openrouter_api_key",
+    "google_api_key", "openrouter_api_key", "chat",
 }
 
 PROVIDERS = {
@@ -171,6 +171,8 @@ def init_config(args):
         args_dict["base_url"] = args.base_url
     if args.tool_path:
         args_dict["tool_path"] = args.tool_path
+    if args.chat:
+        args_dict["chat"] = True
     # Include overrides from --key=value
     for key, value in args.overrides.items():
         args_dict[normalize_key(key)] = value
@@ -190,7 +192,7 @@ def main():
 
     use_cache = get_conf("cache", False)
 
-    if len(args.remaining) < 1 and not args.chat:
+    if len(args.remaining) < 1 and not get_conf("chat"):
         print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
         print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
@@ -350,7 +352,9 @@ def main():
         read_files = read_files_for_context(read_patterns, effective_provider)
         log("Read %d file(s) for context" % len(read_files))
 
-    if not model_str and args.chat:
+    is_chat = get_conf("chat") or meta.get("chat", False)
+
+    if not model_str and is_chat:
         print("No model specified. Use --model or set one in config.",
               file=sys.stderr)
         sys.exit(1)
@@ -389,7 +393,7 @@ def main():
         messages = [{"role": "user", "content": user_content}]
 
     # In chat mode with no initial prompt, ask for first input now
-    if args.chat and not messages:
+    if is_chat and not messages:
         first_input = chat_read_input()
         if first_input is None:
             return
@@ -434,7 +438,7 @@ def main():
                 if result:
                     print(result)
             
-            if not args.chat:
+            if not is_chat:
                 return
                 
             # In chat mode, prompt for next input
