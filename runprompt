@@ -2374,6 +2374,10 @@ def calculator(expression: str):
                 return node.value
             raise ValueError("Only numbers allowed, not %s" %
                              type(node.value).__name__)
+        elif hasattr(ast, 'Num') and isinstance(node, ast.Num):
+            return node.n
+        elif hasattr(ast, 'Str') and isinstance(node, ast.Str):
+            raise ValueError("Only numbers allowed, not str")
         elif isinstance(node, ast.BinOp):
             if type(node.op) not in allowed_ops:
                 raise ValueError("Operation not allowed: %s" %
