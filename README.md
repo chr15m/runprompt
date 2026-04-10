@@ -173,6 +173,22 @@ echo '{"name": "World"}' | ./hello.prompt
 
 Note: `runprompt` must be in your PATH, or use a relative/absolute path in the shebang (e.g. `#!/usr/bin/env ./runprompt`).
 
+### Interactive chat mode
+
+Use the `--chat` flag to start an interactive conversation with the LLM. The conversation history is maintained across turns.
+
+Start a chat with a prompt file to set the initial context or persona:
+
+```bash
+./runprompt --chat expert.prompt
+```
+
+Or start a bare chat without a prompt file (requires specifying a model):
+
+```bash
+./runprompt --chat --model anthropic/claude-sonnet-4-20250514
+```
+
 ### CLI overrides
 
 Override frontmatter values from the command line:

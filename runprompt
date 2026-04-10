@@ -190,12 +190,15 @@ def main():
 
     use_cache = get_conf("cache", False)
 
-    if len(args.remaining) < 1:
+    if len(args.remaining) < 1 and not args.chat:
         print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
         print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
-    prompt_path = args.remaining[0]
-    meta, template = parse_prompt_file(prompt_path)
+    prompt_path = args.remaining[0] if args.remaining else None
+    if prompt_path:
+        meta, template = parse_prompt_file(prompt_path)
+    else:
+        meta, template = {}, ""
     meta = apply_overrides(meta)
     # Apply model from config cascade if not in frontmatter
     if not meta.get("model"):
@@ -270,15 +273,16 @@ def main():
     # Build tool search paths
     search_paths = []
     search_paths.append(os.getcwd())
-    prompt_dir = os.path.dirname(os.path.abspath(prompt_path))
-    if prompt_dir not in search_paths:
-        search_paths.append(prompt_dir)
-    # If prompt is a symlink, also add the real file's directory
-    real_prompt_path = os.path.realpath(prompt_path)
-    if real_prompt_path != os.path.abspath(prompt_path):
-        real_prompt_dir = os.path.dirname(real_prompt_path)
-        if real_prompt_dir not in search_paths:
-            search_paths.append(real_prompt_dir)
+    if prompt_path:
+        prompt_dir = os.path.dirname(os.path.abspath(prompt_path))
+        if prompt_dir not in search_paths:
+            search_paths.append(prompt_dir)
+        # If prompt is a symlink, also add the real file's directory
+        real_prompt_path = os.path.realpath(prompt_path)
+        if real_prompt_path != os.path.abspath(prompt_path):
+            real_prompt_dir = os.path.dirname(real_prompt_path)
+            if real_prompt_dir not in search_paths:
+                search_paths.append(real_prompt_dir)
     # Add tool paths from config cascade
     conf_tool_paths = get_conf("tool_path", [])
     if isinstance(conf_tool_paths, str):
@@ -346,6 +350,10 @@ def main():
         read_files = read_files_for_context(read_patterns, effective_provider)
         log("Read %d file(s) for context" % len(read_files))
 
+    if not model_str and args.chat:
+        print("No model specified. Use --model or set one in config.",
+              file=sys.stderr)
+        sys.exit(1)
     if provider == "test":
         response = load_test_response(prompt_path)
         test_provider = response.get("_provider", "openai")
@@ -374,10 +382,20 @@ def main():
         return
 
     # Build initial messages with optional file attachments
-    user_content = build_content_with_files(prompt, read_files, effective_provider)
-    messages = [{"role": "user", "content": user_content}]
+    messages = []
+    if prompt:
+        user_content = build_content_with_files(prompt, read_files,
+                                                effective_provider)
+        messages = [{"role": "user", "content": user_content}]
 
-    # Tool execution loop
+    # In chat mode with no initial prompt, ask for first input now
+    if args.chat and not messages:
+        first_input = chat_read_input()
+        if first_input is None:
+            return
+        messages = [{"role": "user", "content": first_input}]
+
+    # Tool execution / Chat loop
     while True:
         response = make_request(url, api_key, model, messages, output_config,
                                 effective_provider, tools if tools else None)
@@ -397,23 +415,35 @@ def main():
         user_tool_calls = [tc for tc in tool_calls if tc["name"] != "extract"]
 
         if not user_tool_calls:
-            # No more tool calls, we're done
+            # No more tool calls
             if use_cache and key:
                 cache_set(key, response, effective_provider)
             if args.save_response:
                 save_response(response, effective_provider, args.save_response)
-            # If there was an extract tool call, output that
+            
+            # If there was an extract tool call, output that and exit
             for tc in tool_calls:
                 if tc["name"] == "extract":
                     print(json.dumps(tc["arguments"], indent=2))
                     return
+            
             # Otherwise we already printed text content above
             if not text_content:
                 result = extract_response(response, output_config,
                                           effective_provider)
                 if result:
                     print(result)
-            return
+            
+            if not args.chat:
+                return
+                
+            # In chat mode, prompt for next input
+            user_input = chat_read_input()
+            if user_input is None:
+                return
+            messages.append(build_assistant_message(response, effective_provider))
+            messages.append({"role": "user", "content": user_input})
+            continue
 
         # Add assistant message to conversation
         messages.append(build_assistant_message(response, effective_provider))
@@ -539,6 +569,8 @@ def parse_args(args):
                         help="Use custom OpenAI-compatible endpoint")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
+    parser.add_argument("--chat", action="store_true",
+                        help="Interactive chat mode: prompt for input after each response")
     parser.add_argument("--read", "--file", action="append", default=[],
                         metavar="FILE",
                         help="Read file(s) into context (supports globs)")
@@ -1775,6 +1807,27 @@ def format_tool_call_summary(tool_name, args):
 def truncate_value(value, max_len=50):
     s = str(value).replace('\r\n', '\\n').replace('\r', '\\n').replace('\n', '\\n')
     return s if len(s) <= max_len else s[:max_len - 3] + "..."
+
+
+def chat_read_input():
+    """Read a line of user input for chat mode. Returns None on EOF/empty."""
+    try:
+        sys.stderr.write("%s> %s" % (GREEN, RESET))
+        sys.stderr.flush()
+        if sys.stdin.isatty():
+            line = sys.stdin.readline()
+        else:
+            try:
+                tty = open("/dev/tty", "r")
+                line = tty.readline()
+                tty.close()
+            except (IOError, OSError):
+                return None
+        line = line.strip()
+        return line if line else None
+    except (KeyboardInterrupt, EOFError):
+        sys.stderr.write("\n")
+        return None
 
 
 def read_tty_line(prompt_text):

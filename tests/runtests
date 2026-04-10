@@ -40,6 +40,8 @@ run_test "required inputs tests" python3 tests/test-required-inputs.py
 
 run_test "read file tests" python3 tests/test-read.py
 
+run_test "chat tests" python3 tests/test-chat.py
+
 echo ""
 echo "Passed: $pass, Failed: $fail"
 
