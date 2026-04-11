@@ -45,7 +45,7 @@ CONFIG = {
 
 # Config keys that support the cascade
 CONFIG_KEYS = {
-    "model", "default_model", "tool_path", "base_url", "cache", "cache_dir",
+    "model", "default_model", "tool_path", "base_url", "ollama_base_url", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat",
 }
@@ -169,6 +169,8 @@ def init_config(args):
         args_dict["safe_yes"] = True
     if args.base_url:
         args_dict["base_url"] = args.base_url
+    if args.ollama_base_url:
+        args_dict["ollama_base_url"] = args.ollama_base_url
     if args.tool_path:
         args_dict["tool_path"] = args.tool_path
     if args.chat:
@@ -325,7 +327,9 @@ def main():
         log("Loaded %d shell tools: %s" % (len(shell_tools), list(shell_tools.keys())))
 
     # Determine effective provider early for file reading
-    base_url = get_conf("base_url") or get_base_url()
+    base_url = (get_conf("base_url") or get_conf("ollama_base_url") or
+                meta.get("base_url") or meta.get("ollama_base_url") or
+                get_base_url())
     if base_url:
         effective_provider = "openai"
     else:
@@ -571,6 +575,8 @@ def parse_args(args):
                         help="Save raw API response to file")
     parser.add_argument("--base-url", "--openai-base-url", metavar="URL",
                         help="Use custom OpenAI-compatible endpoint")
+    parser.add_argument("--ollama-base-url", metavar="URL",
+                        help="Use custom Ollama endpoint")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
     parser.add_argument("--chat", action="store_true",
