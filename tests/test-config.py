@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Test configuration cascade functionality."""
+import importlib.machinery
+import importlib.util
 import subprocess
 import os
 import json
@@ -7,6 +9,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 MOCK_PORT = 18820
@@ -39,6 +42,30 @@ class MockHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass
+
+
+class DummyResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        pass
+
+    def read(self):
+        response = {
+            "choices": [{
+                "message": {"content": "OK"}
+            }]
+        }
+        return json.dumps(response).encode("utf-8")
+
+
+def load_runprompt():
+    loader = importlib.machinery.SourceFileLoader("runprompt_module", RUNPROMPT)
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def run_server(server):
@@ -74,6 +101,48 @@ def clean_env():
         if key.startswith('RUNPROMPT_'):
             del env[key]
     return env
+
+
+def test_timeout_cascade_for_provider_request():
+    """Test that timeout config reaches the provider request."""
+    module = load_runprompt()
+    captured = []
+    original_urlopen = urllib.request.urlopen
+
+    def fake_urlopen(req, **kwargs):
+        captured.append(kwargs.get("timeout"))
+        return DummyResponse()
+
+    try:
+        urllib.request.urlopen = fake_urlopen
+        cases = [
+            ({}, {}, {}, 120.0, "default"),
+            ({"timeout": 30}, {}, {}, 30.0, "config file"),
+            ({"timeout": 30}, {"timeout": 45}, {}, 45.0, "env"),
+            ({"timeout": 30}, {"timeout": 45}, {"timeout": 60}, 60.0,
+             "CLI args"),
+        ]
+        for files, env, args, expected, source in cases:
+            module.CONFIG["files"] = files
+            module.CONFIG["env"] = env
+            module.CONFIG["args"] = args
+            module.make_request("https://example.test/chat/completions",
+                                "test-key", "gpt-4o",
+                                [{"role": "user", "content": "hi"}],
+                                {}, "openai")
+            assert captured[-1] == expected, \
+                "Expected timeout from %s, got: %s" % (source, captured[-1])
+    finally:
+        urllib.request.urlopen = original_urlopen
+
+
+def test_timeout_cli_flag():
+    """Test that --timeout is parsed as a config value."""
+    module = load_runprompt()
+    parsed = module.parse_args(["--timeout", "12.5", "test.prompt"])
+    module.init_config(parsed)
+    assert module.get_conf("timeout") == 12.5, \
+        "Expected parsed timeout, got: %s" % module.get_conf("timeout")
 
 
 def test_config_file_model():
@@ -320,6 +389,8 @@ def test_tool_path_from_config():
 
 
 if __name__ == '__main__':
+    test("timeout cascade for provider request", test_timeout_cascade_for_provider_request)
+    test("timeout CLI flag", test_timeout_cli_flag)
     test("config file model", test_config_file_model)
     test("env overrides config file", test_env_overrides_config_file)
     test("CLI overrides env", test_cli_overrides_env)
