@@ -153,7 +153,7 @@ def test_chat_loop():
                 del env[key]
 
         returncode, stdout, stderr = run_with_pty(
-            ['./runprompt', '--chat', 'tests/hello.prompt', '{"name": "World"}'],
+            ['./runprompt', '--chat', '--model', 'openai/gpt-4o', 'tests/hello.prompt', '{"name": "World"}'],
             env=env,
             interactions=[
                 ('Hello there!', 'How are you?'),     # Wait for 1st response, send 2nd message

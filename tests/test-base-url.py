@@ -83,7 +83,7 @@ def test_base_url_env():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -109,7 +109,7 @@ def test_base_url_cli():
         for key in ['OPENAI_BASE_URL', 'BASE_URL']:
             env.pop(key, None)
         result = subprocess.run(
-            ['./runprompt', '--base-url', 'http://127.0.0.1:%d' % (MOCK_PORT + 1),
+            ['./runprompt', '--model', 'openai/gpt-4o', '--base-url', 'http://127.0.0.1:%d' % (MOCK_PORT + 1),
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -136,7 +136,7 @@ def test_base_url_fallback():
         env['BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 2)
         env['OPENAI_API_KEY'] = 'fallback-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -153,7 +153,7 @@ def test_provider_ignored_with_base_url():
     server = start_server(MOCK_PORT + 3)
     try:
         env = clean_env()
-        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 3)
+        env['BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 3)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
             ['./runprompt', 'tests/hello.prompt'],

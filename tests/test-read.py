@@ -132,7 +132,7 @@ def test_read_single_file():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'README.md', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'README.md', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -170,7 +170,7 @@ Say hello to {{name}}!
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 14)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', prompt_file],
+            ['./runprompt', '--model', 'openai/gpt-4o', prompt_file],
             capture_output=True,
             text=True,
             env=env,
@@ -206,7 +206,7 @@ Say hello to {{name}}!
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 15)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'LICENSE', prompt_file],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'LICENSE', prompt_file],
             capture_output=True,
             text=True,
             env=env,
@@ -234,7 +234,7 @@ def test_read_multiple_files():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 1)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'README.md', '--read', 'runprompt',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'README.md', '--read', 'runprompt',
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -258,7 +258,7 @@ def test_read_glob_pattern():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 2)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'tests/*.py', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'tests/*.py', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -286,7 +286,7 @@ def test_read_nonexistent_file_warning():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 3)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'nonexistent_file_xyz.txt',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'nonexistent_file_xyz.txt',
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -314,7 +314,7 @@ def test_read_binary_file():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 4)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '-v', '--read', binary_file, 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '-v', '--read', binary_file, 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -337,7 +337,7 @@ def test_read_with_prompt_content():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 5)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'README.md', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'README.md', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -362,7 +362,7 @@ def test_read_empty_glob_no_matches():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 6)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--read', 'tests/*.nonexistent',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'tests/*.nonexistent',
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -385,7 +385,7 @@ def test_read_skips_directories():
         env['OPENAI_API_KEY'] = 'test-key'
         # Use a pattern that might match directories
         result = subprocess.run(
-            ['./runprompt', '--read', 'tests/*', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'tests/*', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -406,7 +406,7 @@ def test_read_url_image_openai():
         env['OPENAI_API_KEY'] = 'test-key'
         image_url = 'http://127.0.0.1:%d/test-image.png' % (MOCK_PORT + 8)
         result = subprocess.run(
-            ['./runprompt', '--read', image_url, 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', image_url, 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -437,7 +437,7 @@ def test_read_url_no_glob():
         # URL with glob-like characters - will fail to fetch but should warn
         # not try to glob expand
         result = subprocess.run(
-            ['./runprompt', '--read', 'http://127.0.0.1:%d/path/*.png' %
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', 'http://127.0.0.1:%d/path/*.png' %
              (MOCK_PORT + 9), 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -463,7 +463,7 @@ def test_read_url_text_content():
         env['OPENAI_API_KEY'] = 'test-key'
         html_url = 'http://127.0.0.1:%d/test-page.html' % (MOCK_PORT + 10)
         result = subprocess.run(
-            ['./runprompt', '--read', html_url, 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--read', html_url, 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -493,7 +493,7 @@ def test_read_multiple_urls():
         image_url = 'http://127.0.0.1:%d/test-image.png' % (MOCK_PORT + 11)
         html_url = 'http://127.0.0.1:%d/test-page.html' % (MOCK_PORT + 11)
         result = subprocess.run(
-            ['./runprompt',
+            ['./runprompt', '--model', 'openai/gpt-4o',
              '--read', image_url,
              '--read', html_url,
              'tests/hello.prompt'],
@@ -524,7 +524,7 @@ def test_read_mixed_files_and_urls():
         env['OPENAI_API_KEY'] = 'test-key'
         image_url = 'http://127.0.0.1:%d/test-image.png' % (MOCK_PORT + 12)
         result = subprocess.run(
-            ['./runprompt',
+            ['./runprompt', '--model', 'openai/gpt-4o',
              '--read', 'README.md',
              '--read', image_url,
              'tests/hello.prompt'],
@@ -555,7 +555,7 @@ def test_read_url_deduplication():
         env['OPENAI_API_KEY'] = 'test-key'
         image_url = 'http://127.0.0.1:%d/test-image.png' % (MOCK_PORT + 13)
         result = subprocess.run(
-            ['./runprompt',
+            ['./runprompt', '--model', 'openai/gpt-4o',
              '--read', image_url,
              '--read', image_url,
              'tests/hello.prompt'],

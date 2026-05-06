@@ -74,7 +74,7 @@ def test_cache_hit():
 
         # First request - should hit API
         result1 = subprocess.run(
-            ['./runprompt', '--cache', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--cache', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -86,7 +86,7 @@ def test_cache_hit():
 
         # Second request - should use cache
         result2 = subprocess.run(
-            ['./runprompt', '--cache', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--cache', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -117,7 +117,7 @@ def test_cache_miss_different_input():
 
         # First request
         result1 = subprocess.run(
-            ['./runprompt', '--cache', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--cache', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -128,7 +128,7 @@ def test_cache_miss_different_input():
 
         # Second request with different input - should miss cache
         result2 = subprocess.run(
-            ['./runprompt', '--cache', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--cache', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -153,7 +153,7 @@ def test_cache_disabled_by_default():
 
         # First request without --cache
         result1 = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -163,7 +163,7 @@ def test_cache_disabled_by_default():
 
         # Second request without --cache
         result2 = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -193,7 +193,7 @@ def test_cache_env_var():
 
         # First request - should hit API
         result1 = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -204,7 +204,7 @@ def test_cache_env_var():
 
         # Second request - should use cache
         result2 = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
