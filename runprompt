@@ -1867,7 +1867,11 @@ def read_interactive_input(prompt_text: str):
             _history_file = os.path.expanduser(str(_history_file))
             if not _HISTORY_LOADED:
                 try:
-                    _rl.read_history_file(_history_file)
+                    with open(_history_file, "r") as f:
+                        for line in f:
+                            line = line.rstrip('\n')
+                            line = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{4} ", "", line)
+                            _rl.add_history(line)
                 except (FileNotFoundError, OSError):
                     pass
                 _HISTORY_LOADED = True
@@ -1879,6 +1883,7 @@ def read_interactive_input(prompt_text: str):
     # which will automatically use readline for arrow keys and history.
     if (sys.stdin is sys.__stdin__ and sys.stdout is sys.__stdout__ and 
             sys.stdin.isatty() and sys.stdout.isatty()):
+        response = None
         try:
             response = input(prompt_text)
         except (EOFError, KeyboardInterrupt):
@@ -1887,9 +1892,13 @@ def read_interactive_input(prompt_text: str):
         finally:
             sys.stdout.write(RESET)
             sys.stdout.flush()
-            if _rl is not None and _history_file:
+            if _rl is not None and _history_file and response:
                 try:
-                    _rl.write_history_file(_history_file)
+                    from datetime import datetime
+                    now = datetime.now().astimezone()
+                    ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
+                    with open(_history_file, "a") as f:
+                        f.write("%s %s\n" % (ts, response))
                 except OSError:
                     pass
         return response
@@ -1910,6 +1919,7 @@ def read_interactive_input(prompt_text: str):
         fallback_prompt = prompt_text.replace('\001', '').replace('\002', '')
         sys.stderr.write(fallback_prompt)
         sys.stderr.flush()
+        response = None
         try:
             response = input()
         except (EOFError, KeyboardInterrupt):
@@ -1924,7 +1934,11 @@ def read_interactive_input(prompt_text: str):
             _rl.add_history(response)
             if _history_file:
                 try:
-                    _rl.write_history_file(_history_file)
+                    from datetime import datetime
+                    now = datetime.now().astimezone()
+                    ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
+                    with open(_history_file, "a") as f:
+                        f.write("%s %s\n" % (ts, response))
                 except OSError:
                     pass
                     
