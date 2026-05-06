@@ -1335,62 +1335,55 @@ def extract_error_message(error_body):
     return error_body
 
 
-def fetch_openrouter_models(prefix=None):
-    """Fetch available models from OpenRouter, optionally filtered by prefix."""
-    url = "https://openrouter.ai/api/v1/models"
+def _fetch_json(url, headers=None):
+    """Helper to fetch and parse JSON from a URL."""
     try:
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'runprompt/1.0')
+        if headers:
+            for k, v in headers.items():
+                req.add_header(k, v)
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("data", [])
-        if prefix:
-            models = [m for m in models if m.get("id", "").startswith(prefix)]
-        # Sort by context length (proxy for capability/popularity)
-        models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
-        return models
+            return json.loads(resp.read().decode('utf-8'))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+        return {}
+
+
+def fetch_openrouter_models(prefix=None):
+    """Fetch available models from OpenRouter, optionally filtered by prefix."""
+    data = _fetch_json("https://openrouter.ai/api/v1/models")
+    models = data.get("data", [])
+    if prefix:
+        models = [m for m in models if m.get("id", "").startswith(prefix)]
+    # Sort by context length (proxy for capability/popularity)
+    models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
+    return models
 
 
 def fetch_openai_models(api_key):
     """Fetch available models from OpenAI."""
-    url = "https://api.openai.com/v1/models"
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('Authorization', 'Bearer %s' % api_key)
-        req.add_header('User-Agent', 'runprompt/1.0')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("data", [])
-        # Filter to chat models (gpt-*, o1-*, chatgpt-*)
-        chat_prefixes = ('gpt-', 'o1-', 'o3-', 'chatgpt-')
-        models = [m for m in models if any(
-            m.get("id", "").startswith(p) for p in chat_prefixes)]
-        # Sort alphabetically
-        models.sort(key=lambda m: m.get("id", ""))
-        return models
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+    data = _fetch_json("https://api.openai.com/v1/models",
+                       {'Authorization': 'Bearer %s' % api_key})
+    models = data.get("data", [])
+    # Filter to chat models (gpt-*, o1-*, chatgpt-*)
+    chat_prefixes = ('gpt-', 'o1-', 'o3-', 'chatgpt-')
+    models = [m for m in models if any(
+        m.get("id", "").startswith(p) for p in chat_prefixes)]
+    # Sort alphabetically
+    models.sort(key=lambda m: m.get("id", ""))
+    return models
 
 
 def fetch_googleai_models(api_key):
     """Fetch available models from Google AI."""
-    url = "https://generativelanguage.googleapis.com/v1beta/models?key=%s" % api_key
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'runprompt/1.0')
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("models", [])
-        # Filter to generative models
-        models = [m for m in models if "generateContent" in
-                  m.get("supportedGenerationMethods", [])]
-        # Sort by name
-        models.sort(key=lambda m: m.get("name", ""))
-        return models
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+    data = _fetch_json("https://generativelanguage.googleapis.com/v1beta/models?key=%s" % api_key)
+    models = data.get("models", [])
+    # Filter to generative models
+    models = [m for m in models if "generateContent" in
+              m.get("supportedGenerationMethods", [])]
+    # Sort by name
+    models.sort(key=lambda m: m.get("name", ""))
+    return models
 
 
 def suggest_openrouter_models(invalid_model):
