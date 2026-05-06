@@ -84,6 +84,7 @@ TIMEOUT = 120
 # Session cost accumulator (None means unknown)
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
+_HISTORY_LOADED = False
 
 # === CONFIGURATION CASCADE ===
 
@@ -547,6 +548,8 @@ Environment:
   OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
   OPENAI_API_BASE         Custom endpoint URL (legacy OpenAI SDK v0.x style)
   BASE_URL                Custom endpoint URL (fallback)
+  RUNPROMPT_CHAT_HISTORY  Set to true to persist readline history to .runprompt.history
+  RUNPROMPT_HISTORY_FILE  Path to persist readline history for ask_user
   RUNPROMPT_<KEY>         Override config (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
 
 Config priority (highest wins): CLI flags > env vars > ./.runprompt > ~/.config > ~/.runprompt
@@ -1180,14 +1183,6 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         response = json.loads(response_body)
         response["_elapsed"] = elapsed
         return response
-    except (socket.gaierror, socket.timeout, urllib.error.URLError) as e:
-        error_detail = str(e.reason) if hasattr(e, 'reason') else str(e)
-        print("%sNetwork error: %s%s" % (RED, error_detail, RESET),
-              file=sys.stderr)
-        print("Please check your network connection and verify the remote "
-              "server is accessible.", file=sys.stderr)
-        log("Network error details: %s" % e)
-        sys.exit(1)
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         log("Error response: %s" % error_body)
@@ -1211,6 +1206,14 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
                 suggest_openai_models(api_key)
             elif "generativelanguage.googleapis.com" in url:
                 suggest_googleai_models(api_key)
+        sys.exit(1)
+    except (socket.gaierror, socket.timeout, urllib.error.URLError) as e:
+        error_detail = str(e.reason) if hasattr(e, 'reason') else str(e)
+        print("%sNetwork error: %s%s" % (RED, error_detail, RESET),
+              file=sys.stderr)
+        print("Please check your network connection and verify the remote "
+              "server is accessible.", file=sys.stderr)
+        log("Network error details: %s" % e)
         sys.exit(1)
 
 
@@ -1852,24 +1855,97 @@ def truncate_value(value, max_len=50):
     return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
+def read_interactive_input(prompt_text: str):
+    """Read a line of interactive user input with readline history support."""
+    global _HISTORY_LOADED
+    try:
+        import readline as _rl
+        _history_file = get_conf("history_file")
+        if not _history_file and get_conf("chat_history"):
+            _history_file = ".runprompt.history"
+        if _history_file:
+            _history_file = os.path.expanduser(str(_history_file))
+            if not _HISTORY_LOADED:
+                try:
+                    _rl.read_history_file(_history_file)
+                except (FileNotFoundError, OSError):
+                    pass
+                _HISTORY_LOADED = True
+    except ImportError:
+        _rl = None
+        _history_file = None
+
+    # If stdin and stdout are standard TTYs, we can use input() directly
+    # which will automatically use readline for arrow keys and history.
+    if (sys.stdin is sys.__stdin__ and sys.stdout is sys.__stdout__ and 
+            sys.stdin.isatty() and sys.stdout.isatty()):
+        try:
+            response = input(prompt_text)
+        except (EOFError, KeyboardInterrupt):
+            sys.stderr.write("\n")
+            return None
+        finally:
+            sys.stdout.write(RESET)
+            sys.stdout.flush()
+            if _rl is not None and _history_file:
+                try:
+                    _rl.write_history_file(_history_file)
+                except OSError:
+                    pass
+        return response
+
+    # Fallback for redirected environments
+    tty = None
+    original_stdin = None
+    if not sys.stdin.isatty():
+        try:
+            tty = open("/dev/tty", "r")
+        except (IOError, OSError):
+            raise RuntimeError("No TTY available for user input")
+        original_stdin = sys.stdin
+        sys.stdin = tty
+
+    try:
+        # Strip readline non-printing markers for manual stderr output
+        fallback_prompt = prompt_text.replace('\001', '').replace('\002', '')
+        sys.stderr.write(fallback_prompt)
+        sys.stderr.flush()
+        try:
+            response = input()
+        except (EOFError, KeyboardInterrupt):
+            sys.stderr.write("\n")
+            return None
+        finally:
+            sys.stderr.write(RESET)
+            sys.stderr.flush()
+            
+        # Manually add to history in fallback mode
+        if _rl is not None and response:
+            _rl.add_history(response)
+            if _history_file:
+                try:
+                    _rl.write_history_file(_history_file)
+                except OSError:
+                    pass
+                    
+        return response
+    finally:
+        if original_stdin is not None:
+            sys.stdin = original_stdin
+        if tty is not None:
+            tty.close()
+
+
 def chat_read_input():
     """Read a line of user input for chat mode. Returns None on EOF/empty."""
     try:
-        sys.stderr.write("%s> %s" % (GREEN, RESET))
-        sys.stderr.flush()
-        if sys.stdin.isatty():
-            line = sys.stdin.readline()
-        else:
-            try:
-                tty = open("/dev/tty", "r")
-                line = tty.readline()
-                tty.close()
-            except (IOError, OSError):
-                return None
-        line = line.strip()
-        return line if line else None
-    except (KeyboardInterrupt, EOFError):
-        sys.stderr.write("\n")
+        prompt = "\001%s\002> \001%s\002" % (GREEN, RESET)
+        response = read_interactive_input(prompt)
+        if response is None:
+            return None
+        response = response.strip()
+        return response if response else None
+    except RuntimeError:
         return None
 
 
@@ -2548,50 +2624,11 @@ def ask_user(question: str):
     This tool reads from the user's terminal (TTY). If no TTY is available, it
     raises an error.
     """
-    try:
-        import readline  # noqa: F401
-    except ImportError:
-        pass
-
-    tty = None
-    original_stdin = None
-    if not sys.stdin.isatty():
-        try:
-            tty = open("/dev/tty", "r")
-        except (IOError, OSError):
-            tty = None
-        if tty is None:
-            raise RuntimeError("No TTY available for user input")
-        original_stdin = sys.stdin
-        sys.stdin = tty
-
-    try:
-        sys.stderr.write("%s\n" % question)
-        sys.stderr.flush()
-
-        original_stdout = None
-        if sys.stdout is not sys.stderr:
-            original_stdout = sys.stdout
-            sys.stdout = sys.stderr
-
-        prompt = "\001%s\002> " % GREEN
-
-        try:
-            response = input(prompt)
-        except EOFError:
-            response = ""
-        finally:
-            sys.stderr.write(RESET)
-            sys.stderr.flush()
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-
-        return response
-    finally:
-        if original_stdin is not None:
-            sys.stdin = original_stdin
-        if tty is not None:
-            tty.close()
+    sys.stderr.write("%s\n" % question)
+    sys.stderr.flush()
+    prompt = "\001%s\002> \001%s\002" % (GREEN, RESET)
+    response = read_interactive_input(prompt)
+    return response if response is not None else ""
 
 
 ask_user.safe = True
