@@ -379,7 +379,7 @@ def main():
 
     # Build initial messages with optional file attachments
     messages = []
-    if prompt:
+    if prompt or (read_files and not is_chat):
         user_content = build_content_with_files(prompt, read_files,
                                                 effective_provider)
         messages = [{"role": "user", "content": user_content}]
@@ -389,7 +389,9 @@ def main():
         first_input = chat_read_input()
         if first_input is None:
             return
-        messages = [{"role": "user", "content": first_input}]
+        prompt = first_input
+        user_content = build_content_with_files(prompt, read_files, effective_provider)
+        messages = [{"role": "user", "content": user_content}]
 
     # Tool execution / Chat loop
     while True:
@@ -436,6 +438,27 @@ def main():
             user_input = chat_read_input()
             if user_input is None:
                 return
+
+            updated_files = []
+            for f in read_files:
+                if not f.get("is_url"):
+                    try:
+                        current_mtime = os.path.getmtime(f["path"])
+                        if f.get("mtime") and current_mtime > f["mtime"]:
+                            mode = 'rb' if f["is_binary"] else 'r'
+                            kwargs = {} if f["is_binary"] else {'encoding': 'utf-8', 'errors': 'replace'}
+                            with open(f["path"], mode, **kwargs) as file_obj:
+                                f["content"] = file_obj.read()
+                            f["mtime"] = current_mtime
+                            updated_files.append(f["path"])
+                    except OSError:
+                        pass
+            
+            if updated_files and prompt and messages:
+                messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
+                note = "[System note: The following files were modified externally: %s. The file contents at the beginning of this context have been updated to reflect the latest versions.]\n\n" % ", ".join(updated_files)
+                user_input = note + user_input
+
             messages.append(build_assistant_message(response))
             messages.append({"role": "user", "content": user_input})
             continue
@@ -2115,6 +2138,7 @@ def read_files_for_context(patterns, provider=None):
                     "is_binary": is_binary,
                     "is_url": False,
                     "mime_type": get_mime_type(path),
+                    "mtime": os.path.getmtime(path),
                 })
                 cprint(YELLOW, "Loaded file: %s" % path)
                 log("Read file: %s (%s)" %
@@ -2229,7 +2253,8 @@ def build_content_with_files(prompt, files, provider):
             else:
                 content.append({"type": "text", "text": "[Content not available]"})
     # Add the main prompt
-    content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
+    if prompt:
+        content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
     return content
 
 

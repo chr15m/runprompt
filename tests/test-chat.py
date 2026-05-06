@@ -76,7 +76,8 @@ def run_with_pty(args, env, interactions, timeout=5):
     while interaction_idx < len(interactions):
         expect, send = interactions[interaction_idx]
         if expect is None:
-            os.write(master_fd, (send + '\n').encode())
+            send_str = send() if callable(send) else send
+            os.write(master_fd, (send_str + '\n').encode())
             interaction_idx += 1
         else:
             break
@@ -102,7 +103,8 @@ def run_with_pty(args, env, interactions, timeout=5):
         if interaction_idx < len(interactions):
             expect, send = interactions[interaction_idx]
             if expect is None or expect.encode() in output:
-                os.write(master_fd, (send + '\n').encode())
+                send_str = send() if callable(send) else send
+                os.write(master_fd, (send_str + '\n').encode())
                 interaction_idx += 1
     
     # Read any remaining output
@@ -223,9 +225,76 @@ def test_chat_frontmatter():
         server.shutdown()
         shutil.rmtree(temp_dir)
 
+def test_chat_file_update():
+    """Test that chat mode detects external file modifications."""
+    responses = [
+        {"choices": [{"message": {"role": "assistant", "content": "I read the file."}}]},
+        {"choices": [{"message": {"role": "assistant", "content": "I see the update."}}]}
+    ]
+    server = start_server(MOCK_PORT + 2, responses)
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        data_file = os.path.join(temp_dir, "data.txt")
+        with open(data_file, "w") as f:
+            f.write("Initial content")
+
+        prompt_file = os.path.join(temp_dir, "chat.prompt")
+        with open(prompt_file, "w") as f:
+            f.write("---\nmodel: openai/gpt-4o\nchat: true\n---\nAnalyze the file.")
+
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 2)
+        env['OPENAI_API_KEY'] = 'test-key'
+        
+        for key in list(env.keys()):
+            if key.startswith('RUNPROMPT_'):
+                del env[key]
+
+        def update_file_and_return_input():
+            with open(data_file, "w") as f:
+                f.write("Updated content")
+            # Force mtime into the future to avoid filesystem resolution issues
+            new_time = time.time() + 2.0
+            os.utime(data_file, (new_time, new_time))
+            return "What does it say now?"
+
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--read', data_file, prompt_file],
+            env=env,
+            interactions=[
+                ('I read the file.', update_file_and_return_input),
+                ('I see the update.', ''),
+            ],
+            timeout=5
+        )
+        
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        assert len(MockHandler.received_requests) == 2, "Expected 2 API requests"
+        
+        second_req = MockHandler.received_requests[1]['body']
+        messages = second_req['messages']
+        
+        assert len(messages) == 3, "Expected 3 messages in history"
+        
+        # Check that the first message (context) has the updated content
+        context_str = str(messages[0]['content'])
+        assert 'Updated content' in context_str, "Expected updated content in context message"
+        assert 'Initial content' not in context_str, "Expected initial content to be replaced"
+        
+        # Check that the last message (user input) has the system note
+        assert '[System note: The following files were modified externally' in messages[2]['content'], "Expected system note in user message"
+        assert 'What does it say now?' in messages[2]['content'], "Expected user input in user message"
+        
+    finally:
+        server.shutdown()
+        shutil.rmtree(temp_dir)
+
 if __name__ == '__main__':
     test("chat loop maintains history", test_chat_loop)
     test("chat frontmatter", test_chat_frontmatter)
+    test("chat file update", test_chat_file_update)
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
     if failed > 0:
