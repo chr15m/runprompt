@@ -169,28 +169,9 @@ def init_config(args):
     """Initialize global config from all sources."""
     CONFIG["files"] = load_config_files()
     CONFIG["env"] = load_config_env()
-    # Convert args to dict
-    args_dict = {}
-    if args.verbose:
-        args_dict["verbose"] = True
-    if args.cache:
-        args_dict["cache"] = True
-    if args.safe_yes:
-        args_dict["safe_yes"] = True
-    if args.base_url:
-        args_dict["base_url"] = args.base_url
-    if args.ollama_base_url:
-        args_dict["ollama_base_url"] = args.ollama_base_url
-    if args.ollama_api_base:
-        args_dict["ollama_api_base"] = args.ollama_api_base
-    if args.openai_base_url:
-        args_dict["openai_base_url"] = args.openai_base_url
-    if args.openai_api_base:
-        args_dict["openai_api_base"] = args.openai_api_base
-    if args.tool_path:
-        args_dict["tool_path"] = args.tool_path
-    if args.chat:
-        args_dict["chat"] = True
+    # Convert args to dict, filtering for known config keys
+    args_dict = {k: v for k, v in vars(args).items()
+                 if v and k in CONFIG_KEYS}
     # Include overrides from --key=value
     for key, value in args.overrides.items():
         args_dict[normalize_key(key)] = value
