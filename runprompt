@@ -324,22 +324,8 @@ def main():
         log("Loaded %d shell tools: %s" % (len(shell_tools), list(shell_tools.keys())))
 
     # Determine effective provider early for file reading
-    base_url = None
-    if provider == "ollama":
-        base_url = (get_conf("ollama_base_url") or get_conf("ollama_api_base") or
-                    meta.get("ollama_base_url") or meta.get("ollama_api_base") or
-                    get_conf("base_url") or meta.get("base_url") or
-                    get_base_url(provider))
-        effective_provider = "openai"  # Ollama uses OpenAI compatible format
-    elif provider == "openai":
-        base_url = (get_conf("openai_base_url") or get_conf("openai_api_base") or
-                    meta.get("openai_base_url") or meta.get("openai_api_base") or
-                    get_conf("base_url") or meta.get("base_url") or
-                    get_base_url(provider))
-        effective_provider = "openai"
-    else:
-        base_url = get_conf("base_url") or meta.get("base_url") or get_base_url(provider)
-        effective_provider = "openai" if base_url else provider
+    base_url = resolve_base_url(provider, meta)
+    effective_provider = "openai" if (base_url or provider in ("ollama", "openai")) else provider
 
     read_patterns = []
     if meta.get("files") is not None:
@@ -1032,17 +1018,16 @@ def parse_model_string(model_str):
     return parts[0], parts[1]
 
 
-def get_base_url(provider):
-    """Get base URL from legacy env vars based on provider."""
-    if provider == "ollama":
-        return (os.environ.get("OLLAMA_BASE_URL") or
-                os.environ.get("OLLAMA_API_BASE") or
-                os.environ.get("BASE_URL"))
-    elif provider == "openai":
-        return (os.environ.get("OPENAI_BASE_URL") or
-                os.environ.get("OPENAI_API_BASE") or
-                os.environ.get("BASE_URL"))
-    return os.environ.get("BASE_URL")
+def resolve_base_url(provider, meta):
+    """Resolve custom endpoint URL with priority cascade."""
+    prefixes = [provider] if provider in ("ollama", "openai") else []
+    prefixes.append("")  # generic fallback
+    for pfx in prefixes:
+        pfx = f"{pfx}_" if pfx else ""
+        for key in (f"{pfx}base_url", f"{pfx}api_base"):
+            val = get_conf(key) or meta.get(key) or os.environ.get(key.upper())
+            if val: return val
+    return None
 
 
 def print_provider_help():
