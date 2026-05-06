@@ -1771,6 +1771,20 @@ def truncate_value(value, max_len=50):
     return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
+def _write_history(response, filepath):
+    """Write a response to the history file with a timestamp."""
+    if not response or not filepath:
+        return
+    try:
+        from datetime import datetime
+        now = datetime.now().astimezone()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
+        with open(filepath, "a") as f:
+            f.write("%s %s\n" % (ts, response))
+    except OSError:
+        pass
+
+
 def read_interactive_input(prompt_text: str):
     """Read a line of interactive user input with readline history support."""
     global _HISTORY_LOADED
@@ -1808,15 +1822,8 @@ def read_interactive_input(prompt_text: str):
         finally:
             sys.stdout.write(RESET)
             sys.stdout.flush()
-            if _rl is not None and _history_file and response:
-                try:
-                    from datetime import datetime
-                    now = datetime.now().astimezone()
-                    ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
-                    with open(_history_file, "a") as f:
-                        f.write("%s %s\n" % (ts, response))
-                except OSError:
-                    pass
+            if _rl is not None:
+                _write_history(response, _history_file)
         return response
 
     # Fallback for redirected environments
@@ -1848,15 +1855,7 @@ def read_interactive_input(prompt_text: str):
         # Manually add to history in fallback mode
         if _rl is not None and response:
             _rl.add_history(response)
-            if _history_file:
-                try:
-                    from datetime import datetime
-                    now = datetime.now().astimezone()
-                    ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
-                    with open(_history_file, "a") as f:
-                        f.write("%s %s\n" % (ts, response))
-                except OSError:
-                    pass
+            _write_history(response, _history_file)
                     
         return response
     finally:
