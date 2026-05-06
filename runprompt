@@ -850,7 +850,7 @@ def render_template(template, variables):
     def lookup(name, ctx):
         name = name.strip()
         if name == ".":
-            return ctx
+            return ctx.get(".", ctx) if isinstance(ctx, dict) else ctx
         # Handle @index, @first, @last, @key
         if name.startswith("@"):
             return ctx.get(name, "")
@@ -865,27 +865,42 @@ def render_template(template, variables):
         # Remove comments: {{! ... }}
         tmpl = re.sub(r"\{\{!.*?\}\}", "", tmpl, flags=re.DOTALL)
 
-        # Process {{#each key}}...{{/each}}
-        def each_replace(match):
-            key = match.group(1)
-            inner = match.group(2)
+        # Process {{#each key}}...{{/each}} handling nested loops
+        while True:
+            start_idx = tmpl.find("{{#each ")
+            if start_idx == -1:
+                break
+            tag_end = tmpl.find("}}", start_idx)
+            if tag_end == -1:
+                break
+            key = tmpl[start_idx + 8:tag_end].strip()
+            
+            depth = 1
+            i = tag_end + 2
+            while i < len(tmpl):
+                if tmpl.startswith("{{#each ", i):
+                    depth += 1
+                elif tmpl.startswith("{{/each}}", i):
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+                
+            if depth > 0:
+                break  # Unmatched tag, abort to prevent infinite loop
+                
+            inner = tmpl[tag_end + 2:i]
             val = lookup(key, ctx)
             result = []
             if isinstance(val, list):
-                for i, item in enumerate(val):
-                    result.append(render(inner, _build_ctx(item, i, len(val))))
+                for idx, item in enumerate(val):
+                    result.append(render(inner, _build_ctx(item, idx, len(val))))
             elif isinstance(val, dict):
                 keys = list(val.keys())
-                for i, k in enumerate(keys):
-                    result.append(render(inner, _build_ctx(val[k], i, len(keys), k)))
-            return "".join(result)
-
-        tmpl = re.sub(
-            r"\{\{#each\s+(\w+)\}\}(.*?)\{\{/each\}\}",
-            each_replace,
-            tmpl,
-            flags=re.DOTALL
-        )
+                for idx, k in enumerate(keys):
+                    result.append(render(inner, _build_ctx(val[k], idx, len(keys), k)))
+                    
+            tmpl = tmpl[:start_idx] + "".join(result) + tmpl[i + 9:]
 
         # Process sections: {{#key}}...{{/key}}
         def section_replace(match):
@@ -972,9 +987,6 @@ def render_template(template, variables):
         def var_replace(match):
             key = match.group(1).strip()
             val = lookup(key, ctx)
-            # Handle special "." lookup for non-dict items in lists
-            if key == "." and "." in ctx:
-                return str(ctx["."])
             return str(val)
         tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
 
