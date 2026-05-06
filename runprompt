@@ -368,8 +368,7 @@ def main():
         sys.exit(1)
     if provider == "test":
         response = load_test_response(prompt_path)
-        test_provider = response.get("_provider", "openai")
-        result = extract_response(response, output_config, test_provider)
+        result = extract_response(response, output_config)
         print(result)
         return
 
@@ -388,8 +387,7 @@ def main():
 
     if cached_response:
         response = cached_response
-        cached_provider = response.get("_provider", effective_provider)
-        result = extract_response(response, output_config, cached_provider)
+        result = extract_response(response, output_config)
         print(result)
         return
 
@@ -416,12 +414,12 @@ def main():
         print_usage(response)
 
         # Print any text content immediately
-        text_content = extract_text_content(response, effective_provider)
+        text_content = extract_text_content(response)
         if text_content:
             print(text_content)
 
         # Check for tool calls
-        tool_calls = extract_tool_calls(response, effective_provider)
+        tool_calls = extract_tool_calls(response)
 
         # Filter out 'extract' tool calls - those are for structured output
         user_tool_calls = [tc for tc in tool_calls if tc["name"] != "extract"]
@@ -441,8 +439,7 @@ def main():
             
             # Otherwise we already printed text content above
             if not text_content:
-                result = extract_response(response, output_config,
-                                          effective_provider)
+                result = extract_response(response, output_config)
                 if result:
                     print(result)
             
@@ -453,12 +450,12 @@ def main():
             user_input = chat_read_input()
             if user_input is None:
                 return
-            messages.append(build_assistant_message(response, effective_provider))
+            messages.append(build_assistant_message(response))
             messages.append({"role": "user", "content": user_input})
             continue
 
         # Add assistant message to conversation
-        messages.append(build_assistant_message(response, effective_provider))
+        messages.append(build_assistant_message(response))
 
         # Process each tool call
         for tc in user_tool_calls:
@@ -1194,65 +1191,48 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         sys.exit(1)
 
 
-def extract_response(response, output_config, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
+def extract_response(response, output_config):
+    if "content" in response:  # Anthropic
+        for block in response["content"]:
             if block.get("type") == "tool_use" and block.get("name") == "extract":
                 return json.dumps(block.get("input", {}), indent=2)
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            tool_calls = message.get("tool_calls", [])
-            for tc in tool_calls:
-                if tc.get("function", {}).get("name") == "extract":
-                    return tc.get("function", {}).get("arguments", "{}")
-    return extract_text_content(response, provider)
+    elif "choices" in response:  # OpenAI
+        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+            if tc.get("function", {}).get("name") == "extract":
+                return tc.get("function", {}).get("arguments", "{}")
+    return extract_text_content(response)
 
 
-def extract_text_content(response, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        texts = []
-        for block in content:
-            if block.get("type") == "text":
-                texts.append(block.get("text", ""))
-        return "".join(texts)
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            return message.get("content", "") or ""
-        return ""
+def extract_text_content(response):
+    if "content" in response:  # Anthropic
+        return "".join(b.get("text", "") for b in response["content"] if b.get("type") == "text")
+    if "choices" in response:  # OpenAI
+        return response["choices"][0].get("message", {}).get("content", "") or ""
+    return ""
 
 
-def extract_tool_calls(response, provider):
+def extract_tool_calls(response):
     tool_calls = []
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
+    if "content" in response:  # Anthropic
+        for block in response["content"]:
             if block.get("type") == "tool_use":
                 tool_calls.append({
                     "id": block.get("id", ""),
                     "name": block.get("name", ""),
                     "arguments": block.get("input", {}),
                 })
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            for tc in message.get("tool_calls", []):
-                args_str = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except ValueError:
-                    args = {}
-                tool_calls.append({
-                    "id": tc.get("id", ""),
-                    "name": tc.get("function", {}).get("name", ""),
-                    "arguments": args,
-                })
+    elif "choices" in response:  # OpenAI
+        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+            args_str = tc.get("function", {}).get("arguments", "{}")
+            try:
+                args = json.loads(args_str)
+            except ValueError:
+                args = {}
+            tool_calls.append({
+                "id": tc.get("id", ""),
+                "name": tc.get("function", {}).get("name", ""),
+                "arguments": args,
+            })
     return tool_calls
 
 
@@ -1417,17 +1397,12 @@ def to_anthropic_tool(tool_schema):
     }
 
 
-def build_assistant_message(response, provider):
-    if provider == "anthropic":
-        return {
-            "role": "assistant",
-            "content": response.get("content", []),
-        }
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            return choices[0].get("message", {"role": "assistant", "content": ""})
-        return {"role": "assistant", "content": ""}
+def build_assistant_message(response):
+    if "content" in response:  # Anthropic
+        return {"role": "assistant", "content": response.get("content", [])}
+    if "choices" in response:  # OpenAI
+        return response["choices"][0].get("message", {"role": "assistant", "content": ""})
+    return {"role": "assistant", "content": ""}
 
 
 def build_tool_result_message(tool_call, result, error, provider):
