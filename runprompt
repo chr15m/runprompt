@@ -840,6 +840,13 @@ def apply_overrides(meta):
 
 
 def render_template(template, variables):
+    def _build_ctx(item, i, total, key=None):
+        ctx = dict(item) if isinstance(item, dict) else {"_value": item}
+        ctx.update({"@index": i, "@first": i == 0, "@last": i == total - 1, ".": item})
+        if key is not None:
+            ctx["@key"] = key
+        return ctx
+
     def lookup(name, ctx):
         name = name.strip()
         if name == ".":
@@ -866,29 +873,11 @@ def render_template(template, variables):
             result = []
             if isinstance(val, list):
                 for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
+                    result.append(render(inner, _build_ctx(item, i, len(val))))
             elif isinstance(val, dict):
                 keys = list(val.keys())
                 for i, k in enumerate(keys):
-                    item = val[k]
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@key"] = k
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(keys) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
+                    result.append(render(inner, _build_ctx(val[k], i, len(keys), k)))
             return "".join(result)
 
         tmpl = re.sub(
@@ -904,21 +893,9 @@ def render_template(template, variables):
             inner = match.group(2)
             val = lookup(key, ctx)
             if isinstance(val, list):
-                result = []
-                for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {"_value": item}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-                return "".join(result)
+                return "".join(render(inner, _build_ctx(item, i, len(val))) for i, item in enumerate(val))
             if val:
-                new_ctx = val if isinstance(val, dict) else ctx
-                return render(inner, new_ctx)
+                return render(inner, val if isinstance(val, dict) else ctx)
             return ""
 
         # Process inverted sections: {{^key}}...{{/key}}
