@@ -49,6 +49,7 @@ CONFIG_KEYS = {
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
+    "insecure",
 }
 
 PROVIDERS = {
@@ -204,6 +205,10 @@ def get_timeout():
 def main():
     args = parse_args(sys.argv[1:])
     init_config(args)
+
+    if get_conf("insecure"):
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
 
     if args.clear_cache:
         clear_cache()
@@ -560,6 +565,7 @@ Environment:
   BASE_URL                Custom endpoint URL (fallback)
   RUNPROMPT_CHAT_HISTORY  Set to true to persist readline history to .runprompt.history
   RUNPROMPT_HISTORY_FILE  Path to persist readline history for ask_user
+  RUNPROMPT_INSECURE      Set to 1 to allow insecure HTTPS connections
   RUNPROMPT_<KEY>         Override config (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
 
 Config priority (highest wins): CLI flags > env vars > ./.runprompt > ~/.config > ~/.runprompt
@@ -582,6 +588,7 @@ Examples:
   runprompt -v --save-response out.json hello.prompt
   runprompt --cache hello.prompt
   runprompt --safe-yes tool_prompt.prompt
+  runprompt --insecure hello.prompt
   runprompt --read "src/*.py" review.prompt
   runprompt --read "*.png" describe.prompt
   runprompt --read README.md --read "src/**/*.py" analyze.prompt
@@ -621,6 +628,8 @@ def parse_args(args):
                         metavar="PATH", help="Add directory to tool import path")
     parser.add_argument("--chat", action="store_true",
                         help="Interactive chat mode: prompt for input after each response")
+    parser.add_argument("--insecure", action="store_true",
+                        help="Allow insecure HTTPS connections (disables TLS verification)")
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="LLM request timeout in seconds")
     parser.add_argument("--read", "--file", action="append", default=[],

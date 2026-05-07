@@ -550,6 +550,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 | Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
+| Insecure TLS | `insecure: true` | `RUNPROMPT_INSECURE=1` | `--insecure` |
 | LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
 
 ### API keys
