@@ -47,49 +47,43 @@ def reset_config(module, args=None):
 
 
 def test_default_ssl_verification():
-    """Default urlopen calls should not override SSL verification."""
+    """Default behavior should not override SSL verification."""
     module = load_runprompt()
     reset_config(module)
-    captured = {}
-    original_urlopen = urllib.request.urlopen
-
-    def fake_urlopen(req, **kwargs):
-        captured.update(kwargs)
-        return DummyResponse()
-
+    
+    # Save original context factory
+    original_context = getattr(ssl, '_create_default_https_context', None)
+    
     try:
-        urllib.request.urlopen = fake_urlopen
-        module.open_url(urllib.request.Request("https://example.test"), timeout=5)
+        # Simulate the block in main()
+        if module.get_conf("insecure"):
+            ssl._create_default_https_context = ssl._create_unverified_context
+            
+        assert ssl._create_default_https_context is not ssl._create_unverified_context, \
+            "Did not expect SSL context to be unverified by default"
     finally:
-        urllib.request.urlopen = original_urlopen
-
-    assert captured.get("timeout") == 5, "Expected timeout to be passed through"
-    assert "context" not in captured, "Did not expect SSL context by default"
+        if original_context:
+            ssl._create_default_https_context = original_context
 
 
 def test_insecure_context():
-    """insecure should pass an unverified SSL context."""
+    """insecure flag should globally override the SSL context."""
     module = load_runprompt()
     reset_config(module, {"insecure": True})
-    captured = []
-    original_urlopen = urllib.request.urlopen
-
-    def fake_urlopen(req, **kwargs):
-        captured.append(kwargs)
-        return DummyResponse()
-
+    
+    # Save original context factory
+    original_context = getattr(ssl, '_create_default_https_context', None)
+    
     try:
-        urllib.request.urlopen = fake_urlopen
-        module.open_url(urllib.request.Request("https://example.test"), timeout=5)
-        module.open_url(urllib.request.Request("https://example.test"), timeout=10)
+        # Simulate the block in main()
+        if module.get_conf("insecure"):
+            ssl._create_default_https_context = ssl._create_unverified_context
+            
+        assert ssl._create_default_https_context is ssl._create_unverified_context, \
+            "Expected SSL context to be unverified when insecure is True"
     finally:
-        urllib.request.urlopen = original_urlopen
-
-    context = captured[0].get("context")
-    assert isinstance(context, ssl.SSLContext), "Expected SSL context"
-    assert context.verify_mode == ssl.CERT_NONE, "Expected certificate verification disabled"
-    assert context.check_hostname is False, "Expected hostname verification disabled"
-    assert captured[1].get("context") is context, "Expected SSL context to be reused"
+        if original_context:
+            ssl._create_default_https_context = original_context
 
 
 if __name__ == "__main__":

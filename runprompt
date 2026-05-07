@@ -28,7 +28,6 @@ import glob
 import base64
 import mimetypes
 import socket
-import ssl
 
 # Try to use PyYAML if available, otherwise use minimal parser
 try:
@@ -49,7 +48,8 @@ CONFIG_KEYS = {
     "model", "default_model", "tool_path", "base_url", "ollama_base_url", "ollama_api_base",
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
-    "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "insecure",
+    "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
+    "insecure",
 }
 
 PROVIDERS = {
@@ -85,7 +85,6 @@ TIMEOUT = 120
 # Session cost accumulator (None means unknown)
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
-INSECURE_SSL_CONTEXT = None
 _HISTORY_LOADED = False
 
 # === CONFIGURATION CASCADE ===
@@ -180,14 +179,24 @@ def init_config(args):
     CONFIG["args"] = args_dict
 
 
-def open_url(req, timeout):
-    """Open a URL using global network config."""
-    global INSECURE_SSL_CONTEXT
-    if get_conf("insecure", False):
-        if INSECURE_SSL_CONTEXT is None:
-            INSECURE_SSL_CONTEXT = ssl._create_unverified_context()
-        return urllib.request.urlopen(req, timeout=timeout, context=INSECURE_SSL_CONTEXT)
-    return urllib.request.urlopen(req, timeout=timeout)
+def get_timeout():
+    """Get configured LLM request timeout in seconds."""
+    timeout = get_conf("timeout", TIMEOUT)
+    if isinstance(timeout, bool):
+        print("%sInvalid timeout: %s%s" % (RED, timeout, RESET), file=sys.stderr)
+        print("Timeout must be a positive number of seconds.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        print("%sInvalid timeout: %s%s" % (RED, timeout, RESET), file=sys.stderr)
+        print("Timeout must be a positive number of seconds.", file=sys.stderr)
+        sys.exit(1)
+    if timeout <= 0:
+        print("%sInvalid timeout: %s%s" % (RED, timeout, RESET), file=sys.stderr)
+        print("Timeout must be a positive number of seconds.", file=sys.stderr)
+        sys.exit(1)
+    return timeout
 
 
 # === MAIN ENTRY POINT ===
@@ -196,6 +205,10 @@ def open_url(req, timeout):
 def main():
     args = parse_args(sys.argv[1:])
     init_config(args)
+
+    if get_conf("insecure"):
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
 
     if args.clear_cache:
         clear_cache()
@@ -537,7 +550,7 @@ Config file example:
     - /shared/tools
   cache: true
   safe_yes: true
-  insecure: true
+  timeout: 120
   openai_api_key: sk-...
 
 Environment:
@@ -552,8 +565,8 @@ Environment:
   BASE_URL                Custom endpoint URL (fallback)
   RUNPROMPT_CHAT_HISTORY  Set to true to persist readline history to .runprompt.history
   RUNPROMPT_HISTORY_FILE  Path to persist readline history for ask_user
+  RUNPROMPT_INSECURE      Set to 1 to allow insecure HTTPS connections
   RUNPROMPT_<KEY>         Override config (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
-  RUNPROMPT_INSECURE=1
 
 Config priority (highest wins): CLI flags > env vars > ./.runprompt > ~/.config > ~/.runprompt
 
@@ -616,7 +629,9 @@ def parse_args(args):
     parser.add_argument("--chat", action="store_true",
                         help="Interactive chat mode: prompt for input after each response")
     parser.add_argument("--insecure", action="store_true",
-                        help="Allow insecure HTTPS connections")
+                        help="Allow insecure HTTPS connections (disables TLS verification)")
+    parser.add_argument("--timeout", type=float, metavar="SECONDS",
+                        help="LLM request timeout in seconds")
     parser.add_argument("--read", "--file", action="append", default=[],
                         metavar="FILE",
                         help="Read file(s) into context (supports globs)")
@@ -1167,7 +1182,7 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         start_time = time.time()
-        with open_url(req, timeout=TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=get_timeout()) as resp:
             response_body = resp.read().decode("utf-8")
         elapsed = time.time() - start_time
         log("Response: %s" % response_body)
@@ -1211,7 +1226,7 @@ def extract_response(response, output_config):
             if block.get("type") == "tool_use" and block.get("name") == "extract":
                 return json.dumps(block.get("input", {}), indent=2)
     elif "choices" in response:  # OpenAI
-        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+        for tc in (response["choices"][0].get("message", {}).get("tool_calls") or []):
             if tc.get("function", {}).get("name") == "extract":
                 return tc.get("function", {}).get("arguments", "{}")
     return extract_text_content(response)
@@ -1236,7 +1251,7 @@ def extract_tool_calls(response):
                     "arguments": block.get("input", {}),
                 })
     elif "choices" in response:  # OpenAI
-        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+        for tc in (response["choices"][0].get("message", {}).get("tool_calls") or []):
             args_str = tc.get("function", {}).get("arguments", "{}")
             try:
                 args = json.loads(args_str)
@@ -1314,7 +1329,7 @@ def _fetch_json(url, headers=None):
         if headers:
             for k, v in headers.items():
                 req.add_header(k, v)
-        with open_url(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode('utf-8'))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
         return {}
@@ -2053,7 +2068,7 @@ def get_url_mime_type(url):
     try:
         req = urllib.request.Request(url, method='HEAD')
         req.add_header('User-Agent', 'runprompt/1.0')
-        with open_url(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             content_type = resp.headers.get('Content-Type', '')
             if content_type:
                 return content_type.split(';')[0].strip()
@@ -2066,7 +2081,7 @@ def fetch_url_content(url):
     """Fetch URL content, return (content_bytes, mime_type)."""
     req = urllib.request.Request(url)
     req.add_header('User-Agent', 'runprompt/1.0')
-    with open_url(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         content = resp.read()
         content_type = resp.headers.get('Content-Type', '')
         mime_type = content_type.split(';')[0].strip() if content_type else None
@@ -2382,7 +2397,7 @@ def _fetch_clean_simple(url: str):
         'Accept-Language': 'en-US,en;q=0.5',
     }
     req = urllib.request.Request(url, headers=headers)
-    with open_url(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         html_content = resp.read().decode('utf-8', errors='replace')
     extractor = TextExtractor()
     extractor.feed(html_content)
