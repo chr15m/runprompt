@@ -28,6 +28,7 @@ import glob
 import base64
 import mimetypes
 import socket
+import ssl
 
 # Try to use PyYAML if available, otherwise use minimal parser
 try:
@@ -49,6 +50,7 @@ CONFIG_KEYS = {
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
+    "insecure",
 }
 
 PROVIDERS = {
@@ -176,6 +178,8 @@ def init_config(args):
     for key, value in args.overrides.items():
         args_dict[normalize_key(key)] = value
     CONFIG["args"] = args_dict
+    if get_conf("insecure"):
+        ssl._create_default_https_context = ssl._create_unverified_context
 
 
 def get_timeout():
@@ -623,6 +627,8 @@ def parse_args(args):
                         help="Interactive chat mode: prompt for input after each response")
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="LLM request timeout in seconds")
+    parser.add_argument("--insecure", action="store_true",
+                        help="Disable TLS certificate verification")
     parser.add_argument("--read", "--file", action="append", default=[],
                         metavar="FILE",
                         help="Read file(s) into context (supports globs)")
