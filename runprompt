@@ -2542,12 +2542,25 @@ def write_file(path: str):
     tool_suffix = _slugify_filename_for_tool(path)
     tool_name = "write_file_%s" % tool_suffix
 
-    def writer(content: str):
-        """Write content to the file."""
-        with open(path, 'w') as f:
-            f.write(content)
-        return "Wrote %d bytes to %s" % (len(content), path)
-    writer.__doc__ = "Write content to %s." % path
+    def writer(content: str, oldText: str = None):
+        """Write content to the file, or replace oldText if provided."""
+        if oldText is not None:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    file_content = f.read()
+                if oldText not in file_content:
+                    return "Error: oldText not found in file. Please ensure exact match including whitespace."
+                new_content = file_content.replace(oldText, content, 1)
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                return "Successfully replaced text in %s" % path
+            except Exception as e:
+                return "Error editing file: %s" % str(e)
+        else:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return "Wrote %d bytes to %s" % (len(content), path)
+    writer.__doc__ = "Write content to %s. If oldText is provided, replaces exact match of oldText with content instead of overwriting." % path
     writer.tool_name = tool_name
     return writer
 

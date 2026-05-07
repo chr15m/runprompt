@@ -622,6 +622,137 @@ def test_builtin_write_file_execution():
         server.shutdown()
 
 
+def test_builtin_write_file_edit_success():
+    """Test that write_file tool can replace text when oldText is provided."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    test_file = os.path.join(temp_dir, 'test_edit.txt')
+    with open(test_file, 'w') as f:
+        f.write("Hello old world!")
+    try:
+        responses = [
+            # First response: model requests write_file tool call with oldText
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_edit",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file_test_edit_txt",
+                                "arguments": '{"content": "new", "oldText": "old"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            # Second response: model confirms
+            {
+                "choices": [{
+                    "message": {
+                        "content": "I edited the file for you."
+                    }
+                }]
+            }
+        ]
+        server = start_server(MOCK_PORT + 16, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 16)
+        env['OPENAI_API_KEY'] = 'test-key'
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_file('%s')" % test_file,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        # Check file was edited
+        with open(test_file, 'r') as f:
+            content = f.read()
+        assert content == "Hello new world!", \
+            "Expected 'Hello new world!', got '%s'" % content
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
+def test_builtin_write_file_edit_failure():
+    """Test that write_file tool fails gracefully when oldText is not found."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    test_file = os.path.join(temp_dir, 'test_edit_fail.txt')
+    with open(test_file, 'w') as f:
+        f.write("Hello old world!")
+    try:
+        responses = [
+            # First response: model requests write_file tool call with missing oldText
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_edit_fail",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file_test_edit_fail_txt",
+                                "arguments": '{"content": "new", "oldText": "missing"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            # Second response: model handles error
+            {
+                "choices": [{
+                    "message": {
+                        "content": "I failed to edit the file."
+                    }
+                }]
+            }
+        ]
+        server = start_server(MOCK_PORT + 17, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 17)
+        env['OPENAI_API_KEY'] = 'test-key'
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_file('%s')" % test_file,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        # Check file was NOT edited
+        with open(test_file, 'r') as f:
+            content = f.read()
+        assert content == "Hello old world!", \
+            "Expected file to remain unchanged, got '%s'" % content
+        
+        # Verify the error was sent back to the LLM
+        assert len(MockHandler.received_requests) == 2, "Expected 2 requests"
+        second_req = MockHandler.received_requests[1]['body']
+        messages = second_req['messages']
+        tool_msg = [m for m in messages if m.get('role') == 'tool']
+        assert len(tool_msg) == 1, "Expected tool result message"
+        assert 'Error: oldText not found' in tool_msg[0]['content'], \
+            "Expected error message in tool response"
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
 def test_builtin_factory_without_args_warns():
     """Test that using a factory tool without args shows a warning."""
     responses = [
@@ -799,6 +930,8 @@ if __name__ == '__main__':
     test("builtin tool unknown", test_builtin_tool_unknown)
     test("builtin write_file factory", test_builtin_write_file_factory)
     test("builtin write_file execution", test_builtin_write_file_execution)
+    test("builtin write_file edit success", test_builtin_write_file_edit_success)
+    test("builtin write_file edit failure", test_builtin_write_file_edit_failure)
     test("builtin factory without args warns", test_builtin_factory_without_args_warns)
     test("builtin wildcard skips factories", test_builtin_wildcard_skips_factories)
     test("tool_calls: null does not crash", test_tool_calls_null_no_crash)
