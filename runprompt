@@ -46,9 +46,10 @@ CONFIG = {
 
 # Config keys that support the cascade
 CONFIG_KEYS = {
-    "model", "default_model", "tool_path", "base_url", "ollama_base_url", "cache", "cache_dir",
+    "model", "default_model", "tool_path", "base_url", "ollama_base_url", "ollama_api_base",
+    "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
-    "google_api_key", "openrouter_api_key", "chat", "insecure",
+    "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "insecure",
 }
 
 PROVIDERS = {
@@ -68,6 +69,10 @@ PROVIDERS = {
         "url": "https://api.openai.com/v1/chat/completions",
         "env": "OPENAI_API_KEY",
     },
+    "ollama": {
+        "url": "http://localhost:11434/v1/chat/completions",
+        "env": "OLLAMA_API_KEY",
+    },
 }
 
 RED = "\033[31m"
@@ -81,8 +86,14 @@ TIMEOUT = 120
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
 INSECURE_SSL_CONTEXT = None
+_HISTORY_LOADED = False
 
 # === CONFIGURATION CASCADE ===
+
+
+def cprint(color, msg):
+    """Print a colored message to stderr."""
+    print("%s%s%s" % (color, msg, RESET), file=sys.stderr)
 
 
 def load_config_files():
@@ -105,8 +116,7 @@ def load_config_files():
                         for key, value in file_config.items():
                             config[normalize_key(key)] = value
             except Exception as e:
-                print("%sWarning: Could not load config from %s: %s%s" %
-                      (YELLOW, path, e, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: Could not load config from %s: %s" % (path, e))
     return config
 
 
@@ -161,24 +171,9 @@ def init_config(args):
     """Initialize global config from all sources."""
     CONFIG["files"] = load_config_files()
     CONFIG["env"] = load_config_env()
-    # Convert args to dict
-    args_dict = {}
-    if args.verbose:
-        args_dict["verbose"] = True
-    if args.cache:
-        args_dict["cache"] = True
-    if args.safe_yes:
-        args_dict["safe_yes"] = True
-    if args.base_url:
-        args_dict["base_url"] = args.base_url
-    if args.ollama_base_url:
-        args_dict["ollama_base_url"] = args.ollama_base_url
-    if args.tool_path:
-        args_dict["tool_path"] = args.tool_path
-    if args.chat:
-        args_dict["chat"] = True
-    if args.insecure:
-        args_dict["insecure"] = True
+    # Convert args to dict, filtering for known config keys
+    args_dict = {k: v for k, v in vars(args).items()
+                 if v and k in CONFIG_KEYS}
     # Include overrides from --key=value
     for key, value in args.overrides.items():
         args_dict[normalize_key(key)] = value
@@ -233,11 +228,11 @@ def main():
             meta[key] = value
     model_str = meta.get("model", "")
     if not model_str:
-        print("No model specified in prompt file", file=sys.stderr)
+        cprint(RED, "No model specified in prompt file")
         sys.exit(1)
     provider, model = parse_model_string(model_str)
     if not provider:
-        print("No provider in model string", file=sys.stderr)
+        cprint(RED, "No provider in model string")
         sys.exit(1)
     # Collect extra args after prompt file
     extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
@@ -341,19 +336,13 @@ def main():
         log("Loaded %d shell tools: %s" % (len(shell_tools), list(shell_tools.keys())))
 
     # Determine effective provider early for file reading
-    base_url = (get_conf("base_url") or get_conf("ollama_base_url") or
-                meta.get("base_url") or meta.get("ollama_base_url") or
-                get_base_url())
-    if base_url:
-        effective_provider = "openai"
-    else:
-        effective_provider = provider
+    base_url = resolve_base_url(provider, meta)
+    effective_provider = "openai" if (base_url or provider in ("ollama", "openai")) else provider
 
     read_patterns = []
     if meta.get("files") is not None:
         if not isinstance(meta.get("files"), list):
-            print("%sError: 'files' frontmatter must be a list%s" %
-                  (RED, RESET), file=sys.stderr)
+            cprint(RED, "Error: 'files' frontmatter must be a list")
             sys.exit(1)
         # Render template variables in files: patterns
         raw_patterns = meta.get("files") or []
@@ -373,13 +362,11 @@ def main():
     is_chat = get_conf("chat") or meta.get("chat", False)
 
     if not model_str and is_chat:
-        print("No model specified. Use --model or set one in config.",
-              file=sys.stderr)
+        cprint(RED, "No model specified. Use --model or set one in config.")
         sys.exit(1)
     if provider == "test":
         response = load_test_response(prompt_path)
-        test_provider = response.get("_provider", "openai")
-        result = extract_response(response, output_config, test_provider)
+        result = extract_response(response, output_config)
         print(result)
         return
 
@@ -398,14 +385,13 @@ def main():
 
     if cached_response:
         response = cached_response
-        cached_provider = response.get("_provider", effective_provider)
-        result = extract_response(response, output_config, cached_provider)
+        result = extract_response(response, output_config)
         print(result)
         return
 
     # Build initial messages with optional file attachments
     messages = []
-    if prompt:
+    if prompt or (read_files and not is_chat):
         user_content = build_content_with_files(prompt, read_files,
                                                 effective_provider)
         messages = [{"role": "user", "content": user_content}]
@@ -415,7 +401,9 @@ def main():
         first_input = chat_read_input()
         if first_input is None:
             return
-        messages = [{"role": "user", "content": first_input}]
+        prompt = first_input
+        user_content = build_content_with_files(prompt, read_files, effective_provider)
+        messages = [{"role": "user", "content": user_content}]
 
     # Tool execution / Chat loop
     while True:
@@ -426,12 +414,12 @@ def main():
         print_usage(response)
 
         # Print any text content immediately
-        text_content = extract_text_content(response, effective_provider)
+        text_content = extract_text_content(response)
         if text_content:
             print(text_content)
 
         # Check for tool calls
-        tool_calls = extract_tool_calls(response, effective_provider)
+        tool_calls = extract_tool_calls(response)
 
         # Filter out 'extract' tool calls - those are for structured output
         user_tool_calls = [tc for tc in tool_calls if tc["name"] != "extract"]
@@ -451,8 +439,7 @@ def main():
             
             # Otherwise we already printed text content above
             if not text_content:
-                result = extract_response(response, output_config,
-                                          effective_provider)
+                result = extract_response(response, output_config)
                 if result:
                     print(result)
             
@@ -463,12 +450,33 @@ def main():
             user_input = chat_read_input()
             if user_input is None:
                 return
-            messages.append(build_assistant_message(response, effective_provider))
+
+            updated_files = []
+            for f in read_files:
+                if not f.get("is_url"):
+                    try:
+                        current_mtime = os.path.getmtime(f["path"])
+                        if f.get("mtime") and current_mtime > f["mtime"]:
+                            mode = 'rb' if f["is_binary"] else 'r'
+                            kwargs = {} if f["is_binary"] else {'encoding': 'utf-8', 'errors': 'replace'}
+                            with open(f["path"], mode, **kwargs) as file_obj:
+                                f["content"] = file_obj.read()
+                            f["mtime"] = current_mtime
+                            updated_files.append(f["path"])
+                    except OSError:
+                        pass
+            
+            if updated_files and prompt and messages:
+                messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
+                note = "[System note: The following files were modified externally: %s. The file contents at the beginning of this context have been updated to reflect the latest versions.]\n\n" % ", ".join(updated_files)
+                user_input = note + user_input
+
+            messages.append(build_assistant_message(response))
             messages.append({"role": "user", "content": user_input})
             continue
 
         # Add assistant message to conversation
-        messages.append(build_assistant_message(response, effective_provider))
+        messages.append(build_assistant_message(response))
 
         # Process each tool call
         for tc in user_tool_calls:
@@ -477,7 +485,7 @@ def main():
 
             if tool_name not in tools:
                 error_msg = "Unknown tool: %s" % tool_name
-                print("%s%s%s" % (RED, error_msg, RESET), file=sys.stderr)
+                cprint(RED, error_msg)
                 messages.append(build_tool_result_message(
                     tc, None, error_msg, effective_provider))
                 continue
@@ -505,7 +513,7 @@ def main():
             result, error = execute_tool(tool_func, tool_args)
 
             if error:
-                print("%s%s%s" % (RED, error, RESET), file=sys.stderr)
+                cprint(RED, error)
 
             messages.append(build_tool_result_message(
                 tc, result, error, effective_provider))
@@ -538,9 +546,12 @@ Environment:
   GOOGLE_API_KEY          API key for Google AI models
   OPENROUTER_API_KEY      API key for OpenRouter models
   OLLAMA_BASE_URL         Custom Ollama endpoint URL (e.g. http://localhost:11434/v1)
+  OLLAMA_API_BASE         Custom Ollama endpoint URL (legacy)
   OPENAI_BASE_URL         Custom OpenAI-compatible endpoint URL
   OPENAI_API_BASE         Custom endpoint URL (legacy OpenAI SDK v0.x style)
   BASE_URL                Custom endpoint URL (fallback)
+  RUNPROMPT_CHAT_HISTORY  Set to true to persist readline history to .runprompt.history
+  RUNPROMPT_HISTORY_FILE  Path to persist readline history for ask_user
   RUNPROMPT_<KEY>         Override config (e.g. RUNPROMPT_MODEL=openai/gpt-4o)
   RUNPROMPT_INSECURE=1
 
@@ -590,10 +601,16 @@ def parse_args(args):
                         help="Auto-approve tool calls for safe functions")
     parser.add_argument("--save-response", metavar="FILE",
                         help="Save raw API response to file")
-    parser.add_argument("--base-url", "--openai-base-url", metavar="URL",
+    parser.add_argument("--base-url", metavar="URL",
+                        help="Use custom endpoint (applies to current provider)")
+    parser.add_argument("--openai-base-url", metavar="URL",
                         help="Use custom OpenAI-compatible endpoint")
+    parser.add_argument("--openai-api-base", metavar="URL",
+                        help="Use custom OpenAI-compatible endpoint (legacy)")
     parser.add_argument("--ollama-base-url", metavar="URL",
                         help="Use custom Ollama endpoint")
+    parser.add_argument("--ollama-api-base", metavar="URL",
+                        help="Use custom Ollama endpoint (legacy)")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
     parser.add_argument("--chat", action="store_true",
@@ -836,8 +853,7 @@ def validate_required_inputs(meta, variables):
         if field not in variables or variables[field] == "":
             missing.append(field)
     if missing:
-        print("%sError: Missing required input field(s): %s%s" %
-              (RED, ", ".join(missing), RESET), file=sys.stderr)
+        cprint(RED, "Error: Missing required input field(s): %s" % ", ".join(missing))
         input_schema = meta.get("input", {}).get("schema", {})
         print("Expected input schema:", file=sys.stderr)
         for key, value in input_schema.items():
@@ -864,10 +880,17 @@ def apply_overrides(meta):
 
 
 def render_template(template, variables):
+    def _build_ctx(item, i, total, key=None):
+        ctx = dict(item) if isinstance(item, dict) else {"_value": item}
+        ctx.update({"@index": i, "@first": i == 0, "@last": i == total - 1, ".": item})
+        if key is not None:
+            ctx["@key"] = key
+        return ctx
+
     def lookup(name, ctx):
         name = name.strip()
         if name == ".":
-            return ctx
+            return ctx.get(".", ctx) if isinstance(ctx, dict) else ctx
         # Handle @index, @first, @last, @key
         if name.startswith("@"):
             return ctx.get(name, "")
@@ -882,45 +905,42 @@ def render_template(template, variables):
         # Remove comments: {{! ... }}
         tmpl = re.sub(r"\{\{!.*?\}\}", "", tmpl, flags=re.DOTALL)
 
-        # Process {{#each key}}...{{/each}}
-        def each_replace(match):
-            key = match.group(1)
-            inner = match.group(2)
+        # Process {{#each key}}...{{/each}} handling nested loops
+        while True:
+            start_idx = tmpl.find("{{#each ")
+            if start_idx == -1:
+                break
+            tag_end = tmpl.find("}}", start_idx)
+            if tag_end == -1:
+                break
+            key = tmpl[start_idx + 8:tag_end].strip()
+            
+            depth = 1
+            i = tag_end + 2
+            while i < len(tmpl):
+                if tmpl.startswith("{{#each ", i):
+                    depth += 1
+                elif tmpl.startswith("{{/each}}", i):
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+                
+            if depth > 0:
+                break  # Unmatched tag, abort to prevent infinite loop
+                
+            inner = tmpl[tag_end + 2:i]
             val = lookup(key, ctx)
             result = []
             if isinstance(val, list):
-                for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
+                for idx, item in enumerate(val):
+                    result.append(render(inner, _build_ctx(item, idx, len(val))))
             elif isinstance(val, dict):
                 keys = list(val.keys())
-                for i, k in enumerate(keys):
-                    item = val[k]
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {}
-                    item_ctx["@key"] = k
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(keys) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-            return "".join(result)
-
-        tmpl = re.sub(
-            r"\{\{#each\s+(\w+)\}\}(.*?)\{\{/each\}\}",
-            each_replace,
-            tmpl,
-            flags=re.DOTALL
-        )
+                for idx, k in enumerate(keys):
+                    result.append(render(inner, _build_ctx(val[k], idx, len(keys), k)))
+                    
+            tmpl = tmpl[:start_idx] + "".join(result) + tmpl[i + 9:]
 
         # Process sections: {{#key}}...{{/key}}
         def section_replace(match):
@@ -928,21 +948,9 @@ def render_template(template, variables):
             inner = match.group(2)
             val = lookup(key, ctx)
             if isinstance(val, list):
-                result = []
-                for i, item in enumerate(val):
-                    if isinstance(item, dict):
-                        item_ctx = dict(item)
-                    else:
-                        item_ctx = {"_value": item}
-                    item_ctx["@index"] = i
-                    item_ctx["@first"] = (i == 0)
-                    item_ctx["@last"] = (i == len(val) - 1)
-                    item_ctx["."] = item
-                    result.append(render(inner, item_ctx))
-                return "".join(result)
+                return "".join(render(inner, _build_ctx(item, i, len(val))) for i, item in enumerate(val))
             if val:
-                new_ctx = val if isinstance(val, dict) else ctx
-                return render(inner, new_ctx)
+                return render(inner, val if isinstance(val, dict) else ctx)
             return ""
 
         # Process inverted sections: {{^key}}...{{/key}}
@@ -1019,9 +1027,6 @@ def render_template(template, variables):
         def var_replace(match):
             key = match.group(1).strip()
             val = lookup(key, ctx)
-            # Handle special "." lookup for non-dict items in lists
-            if key == "." and "." in ctx:
-                return str(ctx["."])
             return str(val)
         tmpl = re.sub(r"\{\{([^#^/}]+)\}\}", var_replace, tmpl)
 
@@ -1042,12 +1047,16 @@ def parse_model_string(model_str):
     return parts[0], parts[1]
 
 
-def get_base_url():
-    """Get base URL from legacy env vars (fallback after config cascade)."""
-    return (os.environ.get("OLLAMA_BASE_URL") or
-            os.environ.get("OPENAI_BASE_URL") or
-            os.environ.get("OPENAI_API_BASE") or
-            os.environ.get("BASE_URL"))
+def resolve_base_url(provider, meta):
+    """Resolve custom endpoint URL with priority cascade."""
+    prefixes = [provider] if provider in ("ollama", "openai") else []
+    prefixes.append("")  # generic fallback
+    for pfx in prefixes:
+        pfx = f"{pfx}_" if pfx else ""
+        for key in (f"{pfx}base_url", f"{pfx}api_base"):
+            val = get_conf(key) or meta.get(key) or os.environ.get(key.upper())
+            if val: return val
+    return None
 
 
 def print_provider_help():
@@ -1057,6 +1066,7 @@ def print_provider_help():
         "openai": "https://platform.openai.com/api-keys",
         "googleai": "https://aistudio.google.com/app/apikey",
         "openrouter": "https://openrouter.ai/settings/keys",
+        "ollama": "https://ollama.com/",
     }
     print("\nAvailable providers:", file=sys.stderr)
     for name in sorted(PROVIDERS.keys()):
@@ -1070,30 +1080,28 @@ def print_provider_help():
 def get_provider_config(provider, base_url=None):
     if base_url:
         url = base_url.rstrip("/") + "/chat/completions"
-        api_key = get_api_key("openai") or ""
+        api_key = get_api_key(provider) or get_api_key("openai") or "dummy"
         log("Using custom base URL: %s" % url)
         return url, api_key
     if provider not in PROVIDERS:
-        print("%sUnknown provider: %s%s" % (RED, provider, RESET),
-              file=sys.stderr)
+        cprint(RED, "Unknown provider: %s" % provider)
         print_provider_help()
         sys.exit(1)
     config = PROVIDERS[provider]
     api_key = get_api_key(provider)
-    if not api_key:
+    if not api_key and provider != "ollama":
         api_key_urls = {
             "anthropic": "https://console.anthropic.com/settings/keys",
             "openai": "https://platform.openai.com/api-keys",
             "googleai": "https://aistudio.google.com/app/apikey",
             "openrouter": "https://openrouter.ai/settings/keys",
         }
-        print("%sMissing API key: %s%s" % (RED, config["env"], RESET),
-              file=sys.stderr)
+        cprint(RED, "Missing API key: %s" % config["env"])
         url = api_key_urls.get(provider, "")
         if url:
             print("Get key: %s" % url, file=sys.stderr)
         sys.exit(1)
-    return config["url"], api_key
+    return config["url"], api_key or "dummy"
 
 
 # === API REQUEST/RESPONSE ===
@@ -1166,14 +1174,6 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         response = json.loads(response_body)
         response["_elapsed"] = elapsed
         return response
-    except (socket.gaierror, socket.timeout, urllib.error.URLError) as e:
-        error_detail = str(e.reason) if hasattr(e, 'reason') else str(e)
-        print("%sNetwork error: %s%s" % (RED, error_detail, RESET),
-              file=sys.stderr)
-        print("Please check your network connection and verify the remote "
-              "server is accessible.", file=sys.stderr)
-        log("Network error details: %s" % e)
-        sys.exit(1)
     except urllib.error.HTTPError as e:
         error_body = e.read().decode("utf-8")
         log("Error response: %s" % error_body)
@@ -1182,10 +1182,8 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         req_preview = data[:200].decode("utf-8", errors="replace")
         req_preview = req_preview.replace("\r", " ").replace("\n", " ")
 
-        print("%sLLM request failed (model=%s): %s%s" %
-              (RED, model, message, RESET), file=sys.stderr)
-        print("%sRequest preview: %s%s" %
-              (YELLOW, req_preview, RESET), file=sys.stderr)
+        cprint(RED, "LLM request failed (model=%s): %s" % (model, message))
+        cprint(YELLOW, "Request preview: %s" % req_preview)
 
         # Check if this is an invalid model error and suggest alternatives
         msg_lower = message.lower()
@@ -1198,67 +1196,57 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
             elif "generativelanguage.googleapis.com" in url:
                 suggest_googleai_models(api_key)
         sys.exit(1)
+    except (socket.gaierror, socket.timeout, urllib.error.URLError) as e:
+        error_detail = str(e.reason) if hasattr(e, 'reason') else str(e)
+        cprint(RED, "Network error: %s" % error_detail)
+        print("Please check your network connection and verify the remote "
+              "server is accessible.", file=sys.stderr)
+        log("Network error details: %s" % e)
+        sys.exit(1)
 
 
-def extract_response(response, output_config, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
+def extract_response(response, output_config):
+    if "content" in response:  # Anthropic
+        for block in response["content"]:
             if block.get("type") == "tool_use" and block.get("name") == "extract":
                 return json.dumps(block.get("input", {}), indent=2)
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            tool_calls = message.get("tool_calls", [])
-            for tc in tool_calls:
-                if tc.get("function", {}).get("name") == "extract":
-                    return tc.get("function", {}).get("arguments", "{}")
-    return extract_text_content(response, provider)
+    elif "choices" in response:  # OpenAI
+        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+            if tc.get("function", {}).get("name") == "extract":
+                return tc.get("function", {}).get("arguments", "{}")
+    return extract_text_content(response)
 
 
-def extract_text_content(response, provider):
-    if provider == "anthropic":
-        content = response.get("content", [])
-        texts = []
-        for block in content:
-            if block.get("type") == "text":
-                texts.append(block.get("text", ""))
-        return "".join(texts)
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            return message.get("content", "") or ""
-        return ""
+def extract_text_content(response):
+    if "content" in response:  # Anthropic
+        return "".join(b.get("text", "") for b in response["content"] if b.get("type") == "text")
+    if "choices" in response:  # OpenAI
+        return response["choices"][0].get("message", {}).get("content", "") or ""
+    return ""
 
 
-def extract_tool_calls(response, provider):
+def extract_tool_calls(response):
     tool_calls = []
-    if provider == "anthropic":
-        content = response.get("content", [])
-        for block in content:
+    if "content" in response:  # Anthropic
+        for block in response["content"]:
             if block.get("type") == "tool_use":
                 tool_calls.append({
                     "id": block.get("id", ""),
                     "name": block.get("name", ""),
                     "arguments": block.get("input", {}),
                 })
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            message = choices[0].get("message", {})
-            for tc in message.get("tool_calls", []):
-                args_str = tc.get("function", {}).get("arguments", "{}")
-                try:
-                    args = json.loads(args_str)
-                except ValueError:
-                    args = {}
-                tool_calls.append({
-                    "id": tc.get("id", ""),
-                    "name": tc.get("function", {}).get("name", ""),
-                    "arguments": args,
-                })
+    elif "choices" in response:  # OpenAI
+        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+            args_str = tc.get("function", {}).get("arguments", "{}")
+            try:
+                args = json.loads(args_str)
+            except ValueError:
+                args = {}
+            tool_calls.append({
+                "id": tc.get("id", ""),
+                "name": tc.get("function", {}).get("name", ""),
+                "arguments": args,
+            })
     return tool_calls
 
 
@@ -1292,7 +1280,7 @@ def print_usage(response):
         msg += " Cost: %s message, %s session." % (cost_str, session_str)
     if elapsed is not None:
         msg += " Time: %.3fs." % elapsed
-    print("%s%s%s" % (YELLOW, msg, RESET), file=sys.stderr)
+    cprint(YELLOW, msg)
 
 
 def extract_error_message(error_body):
@@ -1318,62 +1306,55 @@ def extract_error_message(error_body):
     return error_body
 
 
-def fetch_openrouter_models(prefix=None):
-    """Fetch available models from OpenRouter, optionally filtered by prefix."""
-    url = "https://openrouter.ai/api/v1/models"
+def _fetch_json(url, headers=None):
+    """Helper to fetch and parse JSON from a URL."""
     try:
         req = urllib.request.Request(url)
         req.add_header('User-Agent', 'runprompt/1.0')
+        if headers:
+            for k, v in headers.items():
+                req.add_header(k, v)
         with open_url(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("data", [])
-        if prefix:
-            models = [m for m in models if m.get("id", "").startswith(prefix)]
-        # Sort by context length (proxy for capability/popularity)
-        models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
-        return models
+            return json.loads(resp.read().decode('utf-8'))
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+        return {}
+
+
+def fetch_openrouter_models(prefix=None):
+    """Fetch available models from OpenRouter, optionally filtered by prefix."""
+    data = _fetch_json("https://openrouter.ai/api/v1/models")
+    models = data.get("data", [])
+    if prefix:
+        models = [m for m in models if m.get("id", "").startswith(prefix)]
+    # Sort by context length (proxy for capability/popularity)
+    models.sort(key=lambda m: m.get("context_length", 0), reverse=True)
+    return models
 
 
 def fetch_openai_models(api_key):
     """Fetch available models from OpenAI."""
-    url = "https://api.openai.com/v1/models"
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('Authorization', 'Bearer %s' % api_key)
-        req.add_header('User-Agent', 'runprompt/1.0')
-        with open_url(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("data", [])
-        # Filter to chat models (gpt-*, o1-*, chatgpt-*)
-        chat_prefixes = ('gpt-', 'o1-', 'o3-', 'chatgpt-')
-        models = [m for m in models if any(
-            m.get("id", "").startswith(p) for p in chat_prefixes)]
-        # Sort alphabetically
-        models.sort(key=lambda m: m.get("id", ""))
-        return models
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+    data = _fetch_json("https://api.openai.com/v1/models",
+                       {'Authorization': 'Bearer %s' % api_key})
+    models = data.get("data", [])
+    # Filter to chat models (gpt-*, o1-*, chatgpt-*)
+    chat_prefixes = ('gpt-', 'o1-', 'o3-', 'chatgpt-')
+    models = [m for m in models if any(
+        m.get("id", "").startswith(p) for p in chat_prefixes)]
+    # Sort alphabetically
+    models.sort(key=lambda m: m.get("id", ""))
+    return models
 
 
 def fetch_googleai_models(api_key):
     """Fetch available models from Google AI."""
-    url = "https://generativelanguage.googleapis.com/v1beta/models?key=%s" % api_key
-    try:
-        req = urllib.request.Request(url)
-        req.add_header('User-Agent', 'runprompt/1.0')
-        with open_url(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        models = data.get("models", [])
-        # Filter to generative models
-        models = [m for m in models if "generateContent" in
-                  m.get("supportedGenerationMethods", [])]
-        # Sort by name
-        models.sort(key=lambda m: m.get("name", ""))
-        return models
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ValueError):
-        return []
+    data = _fetch_json("https://generativelanguage.googleapis.com/v1beta/models?key=%s" % api_key)
+    models = data.get("models", [])
+    # Filter to generative models
+    models = [m for m in models if "generateContent" in
+              m.get("supportedGenerationMethods", [])]
+    # Sort by name
+    models.sort(key=lambda m: m.get("name", ""))
+    return models
 
 
 def suggest_openrouter_models(invalid_model):
@@ -1430,17 +1411,12 @@ def to_anthropic_tool(tool_schema):
     }
 
 
-def build_assistant_message(response, provider):
-    if provider == "anthropic":
-        return {
-            "role": "assistant",
-            "content": response.get("content", []),
-        }
-    else:
-        choices = response.get("choices", [])
-        if choices:
-            return choices[0].get("message", {"role": "assistant", "content": ""})
-        return {"role": "assistant", "content": ""}
+def build_assistant_message(response):
+    if "content" in response:  # Anthropic
+        return {"role": "assistant", "content": response.get("content", [])}
+    if "choices" in response:  # OpenAI
+        return response["choices"][0].get("message", {"role": "assistant", "content": ""})
+    return {"role": "assistant", "content": ""}
 
 
 def build_tool_result_message(tool_call, result, error, provider):
@@ -1481,14 +1457,12 @@ def load_shell_tools(shell_tool_specs):
         elif isinstance(spec, dict):
             cmd = spec.get("cmd")
             if not cmd:
-                print("%sWarning: shell_tool '%s' missing 'cmd' field%s" %
-                      (YELLOW, name, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: shell_tool '%s' missing 'cmd' field" % name)
                 continue
             safe = spec.get("safe", False)
             description = spec.get("description", cmd)
         else:
-            print("%sWarning: shell_tool '%s' has invalid spec%s" %
-                  (YELLOW, name, RESET), file=sys.stderr)
+            cprint(YELLOW, "Warning: shell_tool '%s' has invalid spec" % name)
             continue
         
         # Create the tool function
@@ -1590,23 +1564,16 @@ def load_tools(tool_specs, search_paths):
                                         "schema": schema, "func": func}
                                     log("Loaded builtin tool: %s" % tool_name)
                             except Exception as e:
-                                print("%sWarning: Failed to create tool "
-                                      "'%s': %s%s" %
-                                      (YELLOW, spec, e, RESET), file=sys.stderr)
+                                cprint(YELLOW, "Warning: Failed to create tool '%s': %s" % (spec, e))
                         else:
-                            print("%sWarning: '%s' is not a factory tool%s" %
-                                  (YELLOW, func_name, RESET), file=sys.stderr)
+                            cprint(YELLOW, "Warning: '%s' is not a factory tool" % func_name)
                     else:
-                        print("%sWarning: Unknown builtin tool '%s'%s" %
-                              (YELLOW, func_name, RESET), file=sys.stderr)
+                        cprint(YELLOW, "Warning: Unknown builtin tool '%s'" % func_name)
                 # Import specific builtin tool
                 elif builtin_spec in BUILTIN_TOOLS:
                     func = BUILTIN_TOOLS[builtin_spec]
                     if getattr(func, 'is_factory', False):
-                        print("%sWarning: '%s' requires arguments, "
-                              "e.g. builtin.%s('path')%s" %
-                              (YELLOW, builtin_spec, builtin_spec, RESET),
-                              file=sys.stderr)
+                        cprint(YELLOW, "Warning: '%s' requires arguments, e.g. builtin.%s('path')" % (builtin_spec, builtin_spec))
                     else:
                         schema = function_to_tool_schema(func)
                         if schema:
@@ -1614,8 +1581,7 @@ def load_tools(tool_specs, search_paths):
                             tools[builtin_spec] = {"schema": schema, "func": func}
                             log("Loaded builtin tool: %s" % builtin_spec)
                 else:
-                    print("%sWarning: Unknown builtin tool '%s'%s" %
-                          (YELLOW, builtin_spec, RESET), file=sys.stderr)
+                    cprint(YELLOW, "Warning: Unknown builtin tool '%s'" % builtin_spec)
             continue
         if spec.endswith(".*"):
             # Import all functions from module
@@ -1637,14 +1603,12 @@ def load_tools(tool_specs, search_paths):
                             tools[name] = {"schema": schema, "func": obj}
                             log("Loaded tool: %s from %s" % (name, module_name))
             except Exception as e:
-                print("%sWarning: Could not import tool '%s': %s%s" %
-                      (YELLOW, spec, e, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: Could not import tool '%s': %s" % (spec, e))
         else:
             # Import specific function
             parts = spec.rsplit(".", 1)
             if len(parts) != 2:
-                print("%sWarning: Invalid tool spec '%s'%s" %
-                      (YELLOW, spec, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: Invalid tool spec '%s'" % spec)
                 continue
             module_name, func_name = parts
             try:
@@ -1663,8 +1627,7 @@ def load_tools(tool_specs, search_paths):
                     tools[func_name] = {"schema": schema, "func": func}
                     log("Loaded tool: %s from %s" % (func_name, module_name))
             except Exception as e:
-                print("%sWarning: Could not import tool '%s': %s%s" %
-                      (YELLOW, spec, e, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: Could not import tool '%s': %s" % (spec, e))
     return tools
 
 
@@ -1709,8 +1672,7 @@ def function_to_tool_schema(func):
                 else None))
             for p in sig.parameters if p not in ("self", "cls"))
         doc = "%s(%s)" % (func.__name__, params)
-        print("%sWarning: Function '%s' has no docstring, using: %s%s" %
-              (YELLOW, func.__name__, doc, RESET), file=sys.stderr)
+        cprint(YELLOW, "Warning: Function '%s' has no docstring, using: %s" % (func.__name__, doc))
     properties = {}
     required = []
     for param_name, param in sig.parameters.items():
@@ -1817,7 +1779,7 @@ def is_tool_safe(tool_func):
 
 def print_tool_call(tool_name, args):
     summary = format_tool_call_summary(tool_name, args)
-    print("%s%s%s" % (YELLOW, summary, RESET), file=sys.stderr)
+    cprint(YELLOW, summary)
 
 
 def format_tool_call_summary(tool_name, args):
@@ -1838,24 +1800,110 @@ def truncate_value(value, max_len=50):
     return s if len(s) <= max_len else s[:max_len - 3] + "..."
 
 
+def _write_history(response, filepath):
+    """Write a response to the history file with a timestamp."""
+    if not response or not filepath:
+        return
+    try:
+        from datetime import datetime
+        now = datetime.now().astimezone()
+        ts = now.strftime("%Y-%m-%d %H:%M:%S.") + ("%03d" % (now.microsecond // 1000)) + now.strftime("%z")
+        with open(filepath, "a") as f:
+            f.write("%s %s\n" % (ts, response))
+    except OSError:
+        pass
+
+
+def read_interactive_input(prompt_text: str):
+    """Read a line of interactive user input with readline history support."""
+    global _HISTORY_LOADED
+    try:
+        import readline as _rl
+        _history_file = get_conf("history_file")
+        if not _history_file and get_conf("chat_history"):
+            _history_file = ".runprompt.history"
+        if _history_file:
+            _history_file = os.path.expanduser(str(_history_file))
+            if not _HISTORY_LOADED:
+                try:
+                    with open(_history_file, "r") as f:
+                        for line in f:
+                            line = line.rstrip('\n')
+                            line = re.sub(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{4} ", "", line)
+                            _rl.add_history(line)
+                except (FileNotFoundError, OSError):
+                    pass
+                _HISTORY_LOADED = True
+    except ImportError:
+        _rl = None
+        _history_file = None
+
+    # If stdin and stdout are standard TTYs, we can use input() directly
+    # which will automatically use readline for arrow keys and history.
+    if (sys.stdin is sys.__stdin__ and sys.stdout is sys.__stdout__ and 
+            sys.stdin.isatty() and sys.stdout.isatty()):
+        response = None
+        try:
+            response = input(prompt_text)
+        except (EOFError, KeyboardInterrupt):
+            sys.stderr.write("\n")
+            return None
+        finally:
+            sys.stdout.write(RESET)
+            sys.stdout.flush()
+            if _rl is not None:
+                _write_history(response, _history_file)
+        return response
+
+    # Fallback for redirected environments
+    tty = None
+    original_stdin = None
+    if not sys.stdin.isatty():
+        try:
+            tty = open("/dev/tty", "r")
+        except (IOError, OSError):
+            raise RuntimeError("No TTY available for user input")
+        original_stdin = sys.stdin
+        sys.stdin = tty
+
+    try:
+        # Strip readline non-printing markers for manual stderr output
+        fallback_prompt = prompt_text.replace('\001', '').replace('\002', '')
+        sys.stderr.write(fallback_prompt)
+        sys.stderr.flush()
+        response = None
+        try:
+            response = input()
+        except (EOFError, KeyboardInterrupt):
+            sys.stderr.write("\n")
+            return None
+        finally:
+            sys.stderr.write(RESET)
+            sys.stderr.flush()
+            
+        # Manually add to history in fallback mode
+        if _rl is not None and response:
+            _rl.add_history(response)
+            _write_history(response, _history_file)
+                    
+        return response
+    finally:
+        if original_stdin is not None:
+            sys.stdin = original_stdin
+        if tty is not None:
+            tty.close()
+
+
 def chat_read_input():
     """Read a line of user input for chat mode. Returns None on EOF/empty."""
     try:
-        sys.stderr.write("%s> %s" % (GREEN, RESET))
-        sys.stderr.flush()
-        if sys.stdin.isatty():
-            line = sys.stdin.readline()
-        else:
-            try:
-                tty = open("/dev/tty", "r")
-                line = tty.readline()
-                tty.close()
-            except (IOError, OSError):
-                return None
-        line = line.strip()
-        return line if line else None
-    except (KeyboardInterrupt, EOFError):
-        sys.stderr.write("\n")
+        prompt = "\001%s\002> \001%s\002" % (GREEN, RESET)
+        response = read_interactive_input(prompt)
+        if response is None:
+            return None
+        response = response.strip()
+        return response if response else None
+    except RuntimeError:
         return None
 
 
@@ -2057,15 +2105,13 @@ def read_files_for_context(patterns, provider=None):
                     "is_url": True,
                     "mime_type": mime_type,
                 })
-                print("%sLoaded URL: %s%s" % (YELLOW, pattern, RESET),
-                      file=sys.stderr)
+                cprint(YELLOW, "Loaded URL: %s" % pattern)
                 log("URL (no download): %s (%s)" % (pattern, mime_type))
             else:
                 # Download for anthropic, openai, googleai, etc.
                 if not mime_type:
                     mime_type = None  # Will get from download
-                print("%sDownloading: %s%s" % (YELLOW, pattern, RESET),
-                      file=sys.stderr)
+                cprint(YELLOW, "Downloading: %s" % pattern)
                 try:
                     content, mime_type = fetch_url_content(pattern)
                     is_binary = b'\x00' in content[:8192] if content else False
@@ -2076,12 +2122,10 @@ def read_files_for_context(patterns, provider=None):
                         "is_url": True,
                         "mime_type": mime_type,
                     })
-                    print("%sLoaded URL: %s%s" % (YELLOW, pattern, RESET),
-                          file=sys.stderr)
+                    cprint(YELLOW, "Loaded URL: %s" % pattern)
                     log("Downloaded URL: %s (%s)" % (pattern, mime_type))
                 except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-                    print("%sWarning: Cannot fetch '%s': %s%s" %
-                          (YELLOW, pattern, e, RESET), file=sys.stderr)
+                    cprint(YELLOW, "Warning: Cannot fetch '%s': %s" % (pattern, e))
             continue
         # Expand glob pattern for local files
         matches = glob.glob(pattern, recursive=True)
@@ -2089,8 +2133,7 @@ def read_files_for_context(patterns, provider=None):
             if os.path.exists(pattern):
                 matches = [pattern]
             else:
-                print("%sWarning: No files match '%s'%s" %
-                      (YELLOW, pattern, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: No files match '%s'" % pattern)
                 continue
         for path in sorted(matches):
             if path in seen:
@@ -2112,14 +2155,13 @@ def read_files_for_context(patterns, provider=None):
                     "is_binary": is_binary,
                     "is_url": False,
                     "mime_type": get_mime_type(path),
+                    "mtime": os.path.getmtime(path),
                 })
-                print("%sLoaded file: %s%s" % (YELLOW, path, RESET),
-                      file=sys.stderr)
+                cprint(YELLOW, "Loaded file: %s" % path)
                 log("Read file: %s (%s)" %
                     (path, "binary" if is_binary else "text"))
             except (IOError, OSError) as e:
-                print("%sWarning: Cannot read '%s': %s%s" %
-                      (YELLOW, path, e, RESET), file=sys.stderr)
+                cprint(YELLOW, "Warning: Cannot read '%s': %s" % (path, e))
     return files
 
 
@@ -2228,7 +2270,8 @@ def build_content_with_files(prompt, files, provider):
             else:
                 content.append({"type": "text", "text": "[Content not available]"})
     # Add the main prompt
-    content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
+    if prompt:
+        content.append({"type": "text", "text": "\n# Prompt\n\n" + prompt})
     return content
 
 
@@ -2240,8 +2283,7 @@ def execute_before_commands(before_commands, variables):
     import subprocess
     
     if not isinstance(before_commands, dict):
-        print("%sError: 'before' must be a dict of name: command pairs%s" %
-              (RED, RESET), file=sys.stderr)
+        cprint(RED, "Error: 'before' must be a dict of name: command pairs")
         sys.exit(1)
     
     # Build environment with current variables
@@ -2449,10 +2491,7 @@ def fetch_clean(url: str):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        print("%sWarning: playwright not installed. Using simple scraper. "
-              "For better results install with:\n"
-              "  pip install playwright && playwright install firefox%s" %
-              (YELLOW, RESET), file=sys.stderr)
+        cprint(YELLOW, "Warning: playwright not installed. Using simple scraper. For better results install with:\n  pip install playwright && playwright install firefox")
         return _fetch_clean_simple(url)
     with sync_playwright() as p:
         browser = p.firefox.launch(headless=True)
@@ -2534,50 +2573,11 @@ def ask_user(question: str):
     This tool reads from the user's terminal (TTY). If no TTY is available, it
     raises an error.
     """
-    try:
-        import readline  # noqa: F401
-    except ImportError:
-        pass
-
-    tty = None
-    original_stdin = None
-    if not sys.stdin.isatty():
-        try:
-            tty = open("/dev/tty", "r")
-        except (IOError, OSError):
-            tty = None
-        if tty is None:
-            raise RuntimeError("No TTY available for user input")
-        original_stdin = sys.stdin
-        sys.stdin = tty
-
-    try:
-        sys.stderr.write("%s\n" % question)
-        sys.stderr.flush()
-
-        original_stdout = None
-        if sys.stdout is not sys.stderr:
-            original_stdout = sys.stdout
-            sys.stdout = sys.stderr
-
-        prompt = "\001%s\002> " % GREEN
-
-        try:
-            response = input(prompt)
-        except EOFError:
-            response = ""
-        finally:
-            sys.stderr.write(RESET)
-            sys.stderr.flush()
-            if original_stdout is not None:
-                sys.stdout = original_stdout
-
-        return response
-    finally:
-        if original_stdin is not None:
-            sys.stdin = original_stdin
-        if tty is not None:
-            tty.close()
+    sys.stderr.write("%s\n" % question)
+    sys.stderr.flush()
+    prompt = "\001%s\002> \001%s\002" % (GREEN, RESET)
+    response = read_interactive_input(prompt)
+    return response if response is not None else ""
 
 
 ask_user.safe = True
