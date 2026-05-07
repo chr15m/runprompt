@@ -761,6 +761,30 @@ def test_safe_yes_still_prompts_unsafe_tools():
         server.shutdown()
 
 
+def test_tool_calls_null_no_crash():
+    """Test that a response with tool_calls: null does not crash."""
+    responses = [
+        {"choices": [{"message": {"role": "assistant", "content": "Hello!", "tool_calls": None}}]}
+    ]
+    server = start_server(MOCK_PORT + 15, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 15)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.greet',
+             '--tool-path=tests', 'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        assert 'Hello!' in result.stdout, "Expected model reply in output"
+    finally:
+        server.shutdown()
+
+
 if __name__ == '__main__':
     test("tools sent in request", test_tools_sent_in_request)
     test("tool schema generation", test_tool_schema_generation)
@@ -777,6 +801,7 @@ if __name__ == '__main__':
     test("builtin write_file execution", test_builtin_write_file_execution)
     test("builtin factory without args warns", test_builtin_factory_without_args_warns)
     test("builtin wildcard skips factories", test_builtin_wildcard_skips_factories)
+    test("tool_calls: null does not crash", test_tool_calls_null_no_crash)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
