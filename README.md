@@ -550,6 +550,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 | Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
+| LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
 
 ### API keys
 
@@ -572,6 +573,7 @@ model: openai/gpt-4o
 default_model: anthropic/claude-sonnet-4-20250514  # fallback if model not set anywhere
 cache: true
 safe_yes: true
+timeout: 120
 tool_path:
   - ./tools
   - /shared/tools
