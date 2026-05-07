@@ -1194,7 +1194,7 @@ def extract_response(response, output_config):
             if block.get("type") == "tool_use" and block.get("name") == "extract":
                 return json.dumps(block.get("input", {}), indent=2)
     elif "choices" in response:  # OpenAI
-        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+        for tc in (response["choices"][0].get("message", {}).get("tool_calls") or []):
             if tc.get("function", {}).get("name") == "extract":
                 return tc.get("function", {}).get("arguments", "{}")
     return extract_text_content(response)
@@ -1219,7 +1219,7 @@ def extract_tool_calls(response):
                     "arguments": block.get("input", {}),
                 })
     elif "choices" in response:  # OpenAI
-        for tc in response["choices"][0].get("message", {}).get("tool_calls", []):
+        for tc in (response["choices"][0].get("message", {}).get("tool_calls") or []):
             args_str = tc.get("function", {}).get("arguments", "{}")
             try:
                 args = json.loads(args_str)
