@@ -551,6 +551,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 | Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
 | LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
+| Insecure | `insecure: true` | `RUNPROMPT_INSECURE=1` | `--insecure` |
 
 ### API keys
 
@@ -604,6 +605,8 @@ export BASE_URL="http://localhost:11434/v1"
 ```
 
 When a custom base URL is set, the provider prefix in the model string is ignored and the OpenAI-compatible API format is used.
+
+Use `--insecure` or `insecure: true` to disable TLS certificate verification when targeting self-signed endpoints.
 
 ### Verbose mode
 
