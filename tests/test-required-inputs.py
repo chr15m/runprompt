@@ -69,7 +69,7 @@ def test_missing_required_field():
     env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
     env['OPENAI_API_KEY'] = 'test-key'
     result = subprocess.run(
-        ['./runprompt', 'tests/required-schema.prompt'],
+        ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
         capture_output=True,
         text=True,
         env=env,
@@ -87,7 +87,7 @@ def test_missing_multiple_required_fields():
     env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
     env['OPENAI_API_KEY'] = 'test-key'
     result = subprocess.run(
-        ['./runprompt', 'tests/required-schema.prompt'],
+        ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
         capture_output=True,
         text=True,
         env=env,
@@ -105,7 +105,7 @@ def test_optional_field_not_required():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 1)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/required-schema.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -124,7 +124,7 @@ def test_all_required_fields_provided():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 2)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/required-schema.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -141,7 +141,7 @@ def test_empty_string_counts_as_missing():
     env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
     env['OPENAI_API_KEY'] = 'test-key'
     result = subprocess.run(
-        ['./runprompt', 'tests/required-schema.prompt'],
+        ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
         capture_output=True,
         text=True,
         env=env,
@@ -157,7 +157,7 @@ def test_schema_displayed_in_error():
     env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
     env['OPENAI_API_KEY'] = 'test-key'
     result = subprocess.run(
-        ['./runprompt', 'tests/required-schema.prompt'],
+        ['./runprompt', '--model', 'openai/gpt-4o', 'tests/required-schema.prompt'],
         capture_output=True,
         text=True,
         env=env,
@@ -178,7 +178,7 @@ def test_no_schema_no_validation():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 3)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,

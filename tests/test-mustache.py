@@ -245,6 +245,22 @@ def test_each_helper():
          "Alice(30) Bob(25) ")
 
 
+def test_nested_loops():
+    print("\n--- Nested loops ---")
+    test("nested each", 
+         "{{#each matrix}}Row: {{#each .}}{{.}} {{/each}}| {{/each}}", 
+         {"matrix": [[1, 2], [3, 4]]}, 
+         "Row: 1 2 | Row: 3 4 | ")
+    
+    test("nested sections", 
+         "{{#teams}}{{name}}: {{#players}}{{.}} {{/players}}{{/teams}}", 
+         {"teams": [
+             {"name": "A", "players": ["p1", "p2"]}, 
+             {"name": "B", "players": ["p3"]}
+         ]}, 
+         "A: p1 p2 B: p3 ")
+
+
 def main():
     test_basic_interpolation()
     test_dot_notation()
@@ -259,6 +275,7 @@ def main():
     test_dot_notation_conditionals()
     test_nested_conditionals()
     test_each_helper()
+    test_nested_loops()
 
     print("\n" + "=" * 40)
     print("Passed: %d, Failed: %d" % (passed, failed))

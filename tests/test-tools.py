@@ -155,7 +155,7 @@ def test_tools_sent_in_request():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=sample_tools.*',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.*',
              '--tool-path=tests', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -187,7 +187,7 @@ def test_tool_schema_generation():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 1)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=sample_tools.add_numbers',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.add_numbers',
              '--tool-path=tests', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -247,7 +247,7 @@ def test_tool_execution_flow():
         env['OPENAI_API_KEY'] = 'test-key'
         # Use pty to provide JSON input and 'y' for tool confirmation
         returncode, stdout, stderr = run_with_pty(
-            ['./runprompt', '--tools=sample_tools.add_numbers',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.add_numbers',
              '--tool-path=tests', 'tests/hello.prompt'],
             env=env,
             interactions=[
@@ -305,7 +305,7 @@ def test_tool_user_decline():
         env['OPENAI_API_KEY'] = 'test-key'
         # Use pty to provide JSON input and 'n' to decline tool
         returncode, stdout, stderr = run_with_pty(
-            ['./runprompt', '--tools=sample_tools.add_numbers',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.add_numbers',
              '--tool-path=tests', 'tests/hello.prompt'],
             env=env,
             interactions=[
@@ -337,7 +337,7 @@ def test_specific_tool_import():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 4)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=sample_tools.greet',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.greet',
              '--tool-path=tests', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -391,7 +391,7 @@ def test_unknown_tool_error():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 5)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=sample_tools.greet',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=sample_tools.greet',
              '--tool-path=tests', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -441,7 +441,7 @@ def test_safe_yes_auto_approves_safe_tools():
         env['OPENAI_API_KEY'] = 'test-key'
         # No tool confirmation needed - should auto-approve because greet.safe = True
         result = subprocess.run(
-            ['./runprompt', '--safe-yes', '--tools=sample_tools.greet',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--safe-yes', '--tools=sample_tools.greet',
              '--tool-path=tests', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -472,7 +472,7 @@ def test_builtin_tool_wildcard():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 8)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=builtin.*', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=builtin.*', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -499,7 +499,7 @@ def test_builtin_tool_specific():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 9)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=builtin.fetch_clean', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=builtin.fetch_clean', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -532,7 +532,7 @@ def test_builtin_write_file_factory():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 11)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', "--tools=builtin.write_file('test_output.txt')",
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_file('test_output.txt')",
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -601,7 +601,7 @@ def test_builtin_write_file_execution():
         env['OPENAI_API_KEY'] = 'test-key'
         # Use pty to provide input and 'y' for tool confirmation
         returncode, stdout, stderr = run_with_pty(
-            ['./runprompt', "--tools=builtin.write_file('%s')" % test_file,
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_file('%s')" % test_file,
              'tests/hello.prompt'],
             env=env,
             interactions=[
@@ -633,7 +633,7 @@ def test_builtin_factory_without_args_warns():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 13)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=builtin.write_file',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=builtin.write_file',
              'tests/hello.prompt'],
             capture_output=True,
             text=True,
@@ -658,7 +658,7 @@ def test_builtin_wildcard_skips_factories():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 14)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=builtin.*', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=builtin.*', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -690,7 +690,7 @@ def test_builtin_tool_unknown():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 10)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', '--tools=builtin.nonexistent', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', '--tools=builtin.nonexistent', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -740,7 +740,7 @@ def test_safe_yes_still_prompts_unsafe_tools():
         # With --safe-yes, unsafe tools should still require confirmation
         # Use pty to provide 'y' for the prompt
         returncode, stdout, stderr = run_with_pty(
-            ['./runprompt', '--safe-yes', '--tools=sample_tools.add_numbers',
+            ['./runprompt', '--model', 'openai/gpt-4o', '--safe-yes', '--tools=sample_tools.add_numbers',
              '--tool-path=tests', 'tests/hello.prompt'],
             env=env,
             interactions=[
