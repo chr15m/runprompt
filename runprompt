@@ -1322,6 +1322,12 @@ def extract_error_message(error_body):
             if isinstance(err, dict):
                 err_type = err.get("type", "")
                 message = err.get("message", "")
+
+                if "metadata" in err and isinstance(err["metadata"], dict) and "raw" in err["metadata"]:
+                    raw_val = err["metadata"]["raw"]
+                    raw_str = json.dumps(raw_val) if isinstance(raw_val, (dict, list)) else str(raw_val)
+                    message = "%s\nError: %s" % (message, raw_str) if message else raw_str
+
                 if err_type and message:
                     return "%s: %s" % (err_type, message)
                 if message:
