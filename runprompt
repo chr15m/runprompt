@@ -216,15 +216,31 @@ def main():
 
     use_cache = get_conf("cache", False)
 
-    if len(args.remaining) < 1 and not get_conf("chat"):
+    if len(args.remaining) < 1 and not get_conf("chat") and not args.prompt:
         print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
         print("Try 'runprompt --help' for more information.", file=sys.stderr)
         sys.exit(1)
-    prompt_path = args.remaining[0] if args.remaining else None
-    if prompt_path:
-        meta, template = parse_prompt_file(prompt_path)
+
+    raw_stdin = read_stdin()
+
+    if args.prompt:
+        prompt_path = None
+        if args.prompt == "-":
+            template = raw_stdin or ""
+            raw_stdin = None  # Consumed as the template, so it's no longer available for {{STDIN}}
+        else:
+            template = args.prompt
+        meta = {}
+        extra_args = args.remaining
     else:
-        meta, template = {}, ""
+        prompt_path = args.remaining[0] if args.remaining else None
+        if prompt_path:
+            meta, template = parse_prompt_file(prompt_path)
+            extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
+        else:
+            meta, template = {}, ""
+            extra_args = []
+
     meta = apply_overrides(meta)
     # Apply model from config cascade if not in frontmatter
     if not meta.get("model"):
@@ -247,12 +263,9 @@ def main():
     if not provider:
         cprint(RED, "No provider in model string")
         sys.exit(1)
-    # Collect extra args after prompt file
-    extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
+    
     args_str = " ".join(extra_args)
     log("Extra args: %s" % args_str)
-
-    raw_stdin = read_stdin()
     variables = {"STDIN": raw_stdin or "", "ARGS": args_str}
     # Determine INPUT: prefer STDIN if provided, otherwise use ARGS
     if raw_stdin:
@@ -583,6 +596,7 @@ Tools:
 Examples:
   runprompt hello.prompt
   runprompt hello.prompt Some text to process
+  runprompt -p "Say hello to {{name}}" --model openai/gpt-4o '{"name": "World"}'
   echo '{"name": "World"}' | runprompt hello.prompt
   runprompt --model openai/gpt-4o hello.prompt
   runprompt -v --save-response out.json hello.prompt
@@ -632,6 +646,8 @@ def parse_args(args):
                         help="Allow insecure HTTPS connections (disables TLS verification)")
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
                         help="LLM request timeout in seconds")
+    parser.add_argument("-p", "--prompt", metavar="TEXT",
+                        help="Provide prompt template directly (use '-' to read template from stdin)")
     parser.add_argument("--read", "--file", action="append", default=[],
                         metavar="FILE",
                         help="Read file(s) into context (supports globs)")

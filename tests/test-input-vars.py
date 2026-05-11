@@ -288,6 +288,68 @@ def test_stdin_takes_precedence_for_json_parsing():
         server.shutdown()
 
 
+def test_prompt_flag_string():
+    """Test providing the template directly via --prompt."""
+    server = start_server(MOCK_PORT + 9)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 9)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', '-p', 'Hello {{name}}!', '{"name": "Alice"}'],
+            capture_output=True,
+            text=True,
+            env=env
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'Hello Alice!' in prompt, "Expected 'Hello Alice!' in prompt, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
+def test_prompt_flag_stdin():
+    """Test reading the template from stdin using -p -."""
+    server = start_server(MOCK_PORT + 10)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 10)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', '-p', '-', '{"name": "Bob"}'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='Goodbye {{name}}!'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'Goodbye Bob!' in prompt, "Expected 'Goodbye Bob!' in prompt, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
+def test_prompt_flag_with_stdin_data():
+    """Test using --prompt while piping data to stdin."""
+    server = start_server(MOCK_PORT + 11)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 11)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', '-p', 'Process: {{STDIN}}'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='Some raw data'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'Process: Some raw data' in prompt, "Expected 'Process: Some raw data' in prompt, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
 if __name__ == '__main__':
     test("STDIN JSON parsed", test_stdin_json_parsed)
     test("ARGS JSON parsed", test_args_json_parsed)
@@ -298,6 +360,9 @@ if __name__ == '__main__':
     test("INPUT prefers STDIN", test_input_prefers_stdin)
     test("INPUT falls back to ARGS", test_input_falls_back_to_args)
     test("STDIN takes precedence for JSON parsing", test_stdin_takes_precedence_for_json_parsing)
+    test("prompt flag string", test_prompt_flag_string)
+    test("prompt flag stdin", test_prompt_flag_stdin)
+    test("prompt flag with stdin data", test_prompt_flag_with_stdin_data)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
