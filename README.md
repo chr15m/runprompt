@@ -70,6 +70,14 @@ cat article.txt | ./runprompt summarize.prompt
 
 The special `{{STDIN}}` variable always contains the raw stdin as a string. Both `{{STDIN}}` and `{{ARGS}}` are always available; if input is JSON it's also parsed into individual variables.
 
+### Inline prompts
+
+Run a template directly from the command line without creating a `.prompt` file using `-p` or `--prompt`:
+
+```bash
+./runprompt -p "Say hello to {{name}}" --model openai/gpt-4o '{"name": "World"}'
+```
+
 ### Command line arguments
 
 Pass arguments directly on the command line:
@@ -189,6 +197,8 @@ Or start a bare chat without a prompt file (requires specifying a model):
 ./runprompt --chat --model anthropic/claude-sonnet-4-20250514
 ```
 
+To persist your readline history across sessions (for chat mode and the `ask_user` tool), set `RUNPROMPT_CHAT_HISTORY=1` or `chat_history: true` in your config. You can customize the history file location with `RUNPROMPT_HISTORY_FILE` (defaults to `.runprompt.history`).
+
 ### CLI overrides
 
 Override frontmatter values from the command line:
@@ -206,6 +216,14 @@ echo '{"name": "Alice"}' | ./runprompt hello.prompt
 ```
 
 See `--help` for all options.
+
+### Raw API responses
+
+While standard output only prints the final extracted text or JSON, you can save the entire raw API envelope (including token usage, finish reasons, and exact model versions) using `--save-response`:
+
+```bash
+./runprompt --save-response api_out.json hello.prompt
+```
 
 ### File attachments
 
@@ -550,6 +568,8 @@ Configuration values can be set from config file, env var or command line flag, 
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 | Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
+| Chat history | `chat_history: true` | `RUNPROMPT_CHAT_HISTORY=1` | |
+| History file | `history_file: .history` | `RUNPROMPT_HISTORY_FILE` | |
 | Insecure TLS | `insecure: true` | `RUNPROMPT_INSECURE=1` | `--insecure` |
 | LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
 
@@ -624,6 +644,7 @@ Models are specified as `provider/model-name`:
 | OpenAI | `openai/gpt-4o` | [Get key](https://platform.openai.com/api-keys) |
 | Google AI | `googleai/gemini-1.5-pro` | [Get key](https://aistudio.google.com/app/apikey) |
 | OpenRouter | `openrouter/anthropic/claude-sonnet-4-20250514` | [Get key](https://openrouter.ai/settings/keys) |
+| Ollama | `ollama/llama3` | (Optional) |
 
 [OpenRouter](https://openrouter.ai) provides access to models from many providers (Anthropic, Google, Meta, etc.) through a single API key.
 
@@ -646,6 +667,12 @@ export RUNPROMPT_CACHE=1; echo "..." | ./runprompt a.prompt | ./runprompt b.prom
 ```
 
 Cached responses are stored in `~/.cache/runprompt/` (or `$XDG_CACHE_HOME/runprompt/`), based on the inputs applied to the template and frontmatter.
+
+You can clear the cache directory at any time:
+
+```bash
+./runprompt --clear-cache
+```
 
 See `--help` for more information.
 
