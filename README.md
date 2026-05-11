@@ -2,7 +2,7 @@
 
 Run LLM [.prompt](https://google.github.io/dotprompt/) files from your shell with a single-file Python script.
 
-[Dotprompt](https://google.github.io/dotprompt/) is an prompt template format for LLMs where a `.prompt` file contains the prompt and metadata (model, schema, config) in a single file. You can use it to run LLM prompts and get structured responses right in your shell.
+A [.prompt](https://google.github.io/dotprompt/) file contains the prompt and metadata (model, schema, config) in a single file. You can use it to run LLM prompts and get structured responses right in your shell. You can use it to automate AI workflows or build your own harness. Make prompts first-class artifacts. Check them into your repo and run them from the command line instead of making ad-hoc requests to AI chatbots.
 
 [Quick start](#quick-start) | [Examples](#examples) | [Tools](#tools) | [Template syntax](#template-syntax) | [Configuration](#configuration) | [Providers](#providers) | [Caching](#caching) | [Spec compliance](#spec-compliance)
 
