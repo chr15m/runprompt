@@ -424,9 +424,13 @@ def main():
 
     # In chat mode with no initial prompt, ask for first input now
     if is_chat and not messages:
-        first_input = chat_read_input()
-        if first_input is None:
-            return
+        while True:
+            first_input = chat_read_input()
+            if first_input is None:
+                return
+            first_input = process_chat_commands(first_input, tools)
+            if first_input:
+                break
         prompt = first_input
         user_content = build_content_with_files(prompt, read_files, effective_provider)
         messages = [{"role": "user", "content": user_content}]
@@ -473,9 +477,13 @@ def main():
                 return
                 
             # In chat mode, prompt for next input
-            user_input = chat_read_input()
-            if user_input is None:
-                return
+            while True:
+                user_input = chat_read_input()
+                if user_input is None:
+                    return
+                user_input = process_chat_commands(user_input, tools)
+                if user_input:
+                    break
 
             updated_files = []
             for f in read_files:
@@ -1306,7 +1314,7 @@ def print_usage(response):
     msg = "Tokens: %s sent, %s received, %s total." % (
         format_tokens(sent), format_tokens(recv), format_tokens(total))
     if cost is not None or SESSION_COST > 0:
-        cost_str = "$%.2f" % cost if cost >= 0.01 else "$%.4f" % cost
+        cost_str = ("$%.2f" % cost if cost >= 0.01 else "$%.4f" % cost) if cost is not None else "?"
         session_str = "$%.2f" % SESSION_COST if SESSION_COST >= 0.01 else "$%.4f" % SESSION_COST
         msg += " Cost: %s message, %s session." % (cost_str, session_str)
     if elapsed is not None:
@@ -1942,6 +1950,40 @@ def chat_read_input():
         return response if response else None
     except RuntimeError:
         return None
+
+
+def process_chat_commands(user_input, tools):
+    """Process /edit and /drop commands in chat input, updating tools dict."""
+    if not user_input:
+        return user_input
+    lines = user_input.split('\n')
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('/edit '):
+            path = stripped[6:].strip()
+            if path:
+                factory = BUILTIN_TOOLS["write_file"]
+                func = factory(path)
+                tool_name = getattr(func, 'tool_name', "write_file_" + _slugify_filename_for_tool(path))
+                schema = function_to_tool_schema(func)
+                if schema:
+                    schema['function']['name'] = tool_name
+                    tools[tool_name] = {"schema": schema, "func": func}
+                    cprint(YELLOW, "Added tool: %s" % tool_name)
+            continue
+        elif stripped.startswith('/drop '):
+            path = stripped[6:].strip()
+            if path:
+                tool_name = "write_file_" + _slugify_filename_for_tool(path)
+                if tool_name in tools:
+                    del tools[tool_name]
+                    cprint(YELLOW, "Dropped tool: %s" % tool_name)
+                else:
+                    cprint(YELLOW, "Tool not found: %s" % tool_name)
+            continue
+        new_lines.append(line)
+    return '\n'.join(new_lines).strip()
 
 
 def read_tty_line(prompt_text):
