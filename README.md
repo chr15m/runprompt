@@ -199,6 +199,14 @@ Or start a bare chat without a prompt file (requires specifying a model):
 
 To persist your readline history across sessions (for chat mode and the `ask_user` tool), set `RUNPROMPT_CHAT_HISTORY=1` or `chat_history: true` in your config. You can customize the history file location with `RUNPROMPT_HISTORY_FILE` (defaults to `.runprompt.history`).
 
+### Chat commands
+
+During an interactive chat session, you can use special commands to dynamically modify the context or tools:
+
+- `/read <path-or-url>`: Read a file or URL and append its contents to the chat context.
+- `/edit <path>`: Dynamically expose a `write_file` tool to the LLM for the specified file, allowing it to write or edit that file.
+- `/drop <path>`: Remove the `write_file` tool for the specified file.
+
 ### CLI overrides
 
 Override frontmatter values from the command line:

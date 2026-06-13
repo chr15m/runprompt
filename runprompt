@@ -465,7 +465,7 @@ def main():
             first_input = chat_read_input()
             if first_input is None:
                 return
-            first_input = process_chat_commands(first_input, tools)
+            first_input = process_chat_commands(first_input, tools, read_files, effective_provider)
             if first_input:
                 break
         prompt = first_input
@@ -518,7 +518,11 @@ def main():
                 user_input = chat_read_input()
                 if user_input is None:
                     return
-                user_input = process_chat_commands(user_input, tools)
+                old_num_files = len(read_files)
+                user_input = process_chat_commands(user_input, tools, read_files, effective_provider)
+                if len(read_files) > old_num_files and messages:
+                    log("Files added via /read, rebuilding first message content")
+                    messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
                 if user_input:
                     break
 
@@ -1993,8 +1997,8 @@ def chat_read_input():
         return None
 
 
-def process_chat_commands(user_input, tools):
-    """Process /edit and /drop commands in chat input, updating tools dict."""
+def process_chat_commands(user_input, tools, read_files=None, effective_provider=None):
+    """Process /edit, /drop and /read commands in chat input, updating tools and read_files."""
     if not user_input:
         return user_input
     lines = user_input.split('\n')
@@ -2022,6 +2026,18 @@ def process_chat_commands(user_input, tools):
                     cprint(YELLOW, "Dropped tool: %s" % tool_name)
                 else:
                     cprint(YELLOW, "Tool not found: %s" % tool_name)
+            continue
+        elif stripped.startswith('/read '):
+            path = stripped[6:].strip()
+            if path and read_files is not None:
+                log("Processing /read command for path: %s" % path)
+                new_files = read_files_for_context([path], effective_provider)
+                for nf in new_files:
+                    if not any(f["path"] == nf["path"] for f in read_files):
+                        read_files.append(nf)
+                        cprint(YELLOW, "Added file to context: %s" % nf["path"])
+                    else:
+                        cprint(YELLOW, "File already in context: %s" % nf["path"])
             continue
         new_lines.append(line)
     return '\n'.join(new_lines).strip()
