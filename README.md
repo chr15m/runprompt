@@ -591,6 +591,7 @@ API keys can be set via config file, `RUNPROMPT_*` env var, or native env var:
 | OpenAI | `openai_api_key: sk-...` | `RUNPROMPT_OPENAI_API_KEY` | `OPENAI_API_KEY` |
 | Google AI | `google_api_key: ...` | `RUNPROMPT_GOOGLE_API_KEY` | `GOOGLE_API_KEY` |
 | OpenRouter | `openrouter_api_key: ...` | `RUNPROMPT_OPENROUTER_API_KEY` | `OPENROUTER_API_KEY` |
+| Requesty | `requesty_api_key: ...` | `RUNPROMPT_REQUESTY_API_KEY` | `REQUESTY_API_KEY` |
 
 Priority for API keys: config file, env var, then flag as fallback.
 
