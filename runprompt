@@ -49,7 +49,7 @@ CONFIG_KEYS = {
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
-    "insecure",
+    "insecure", "autosave", "autosave_file", "load",
 }
 
 PROVIDERS = {
@@ -86,6 +86,7 @@ TIMEOUT = 120
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
 _HISTORY_LOADED = False
+
 
 # === CONFIGURATION CASCADE ===
 
@@ -199,85 +200,63 @@ def get_timeout():
     return timeout
 
 
-# === MAIN ENTRY POINT ===
+def save_context(filename, meta, messages, read_files, variables, prompt):
+    """Serialize (with base64 for bytes) and write JSON with indent=2."""
+    if os.path.exists(filename):
+        try:
+            bak_filename = filename + ".bak"
+            if os.path.exists(bak_filename):
+                os.remove(bak_filename)
+            os.rename(filename, bak_filename)
+            log("Backed up existing context file to %s" % bak_filename)
+        except Exception as e:
+            cprint(YELLOW, "Warning: Could not back up existing context file: %s" % e)
+
+    serialized_read_files = []
+    for f in read_files:
+        f_copy = dict(f)
+        if f_copy.get("is_binary") and isinstance(f_copy.get("content"), bytes):
+            f_copy["content"] = base64.b64encode(f_copy["content"]).decode("ascii")
+            f_copy["_is_b64"] = True
+        elif isinstance(f_copy.get("content"), bytes):
+            f_copy["content"] = base64.b64encode(f_copy["content"]).decode("ascii")
+            f_copy["_is_b64"] = True
+        serialized_read_files.append(f_copy)
+
+    data = {
+        "meta": meta,
+        "messages": messages,
+        "read_files": serialized_read_files,
+        "variables": variables,
+        "prompt": prompt,
+    }
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
-def main():
-    args = parse_args(sys.argv[1:])
-    init_config(args)
+def load_context_file(filename):
+    """Read JSON, reverse the base64 encoding, return the context dict."""
+    with open(filename, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    read_files = data.get("read_files", [])
+    for f in read_files:
+        if f.get("_is_b64"):
+            if f.get("content") is not None:
+                f["content"] = base64.b64decode(f["content"].encode("ascii"))
+            f.pop("_is_b64", None)
+    data["read_files"] = read_files
+    return data
 
-    if get_conf("insecure"):
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
 
-    if args.clear_cache:
-        clear_cache()
-        sys.exit(0)
+def setup_run_state(meta, args, prompt_path):
+    """Resolve model/provider/tools/url from meta. Returns a dict.
 
-    use_cache = get_conf("cache", False)
-
-    if len(args.remaining) < 1 and not get_conf("chat") and not args.prompt:
-        print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
-        print("Try 'runprompt --help' for more information.", file=sys.stderr)
-        sys.exit(1)
-
-    raw_stdin = read_stdin()
-
-    # Determine if we have a prompt_path
-    prompt_path = None
-    if args.remaining:
-        first_pos = args.remaining[0]
-        if args.prompt:
-            try:
-                pos_idx = sys.argv.index(first_pos)
-            except ValueError:
-                pos_idx = -1
-
-            prompt_idx = -1
-            for idx, arg in enumerate(sys.argv):
-                if arg in ("-p", "--prompt") or arg.startswith("-p=") or arg.startswith("--prompt="):
-                    prompt_idx = idx
-                    break
-
-            if pos_idx != -1 and prompt_idx != -1 and pos_idx < prompt_idx:
-                if os.path.isfile(first_pos):
-                    prompt_path = first_pos
-                    log("Detected prompt file before prompt flag: %s" % prompt_path)
-        else:
-            prompt_path = first_pos
-
-    # Parse prompt file if present
-    file_meta = {}
-    file_template = ""
-    if prompt_path:
-        file_meta, file_template = parse_prompt_file(prompt_path)
-        extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
-        log("Parsed prompt file: %s" % prompt_path)
-    else:
-        extra_args = args.remaining
-
-    # Parse inline prompt if present
-    inline_meta = {}
-    inline_template = ""
-    if args.prompt:
-        if args.prompt == "-":
-            raw_prompt = raw_stdin or ""
-            raw_stdin = None  # Consumed as the template, so it's no longer available for {{STDIN}}
-        else:
-            raw_prompt = args.prompt
-        inline_meta, inline_template = parse_prompt_content(raw_prompt)
-        log("Parsed inline prompt")
-
-    # Merge metadata and templates
-    meta = {}
-    meta.update(file_meta)
-    meta.update(inline_meta)
-
-    if args.prompt:
-        template = inline_template
-    else:
-        template = file_template
-
+    Keys: meta, model_str, provider, model, base_url,
+          effective_provider, url, api_key, tools.
+    Raises ValueError on missing model/provider.
+    """
+    meta = dict(meta)
     meta = apply_overrides(meta)
     # Apply model from config cascade if not in frontmatter
     if not meta.get("model"):
@@ -294,57 +273,10 @@ def main():
             meta[key] = value
     model_str = meta.get("model", "")
     if not model_str:
-        cprint(RED, "No model specified in prompt file")
-        sys.exit(1)
+        raise ValueError("No model specified")
     provider, model = parse_model_string(model_str)
     if not provider:
-        cprint(RED, "No provider in model string")
-        sys.exit(1)
-    
-    args_str = " ".join(extra_args)
-    log("Extra args: %s" % args_str)
-    variables = {"STDIN": raw_stdin or "", "ARGS": args_str}
-    # Determine INPUT: prefer STDIN if provided, otherwise use ARGS
-    if raw_stdin:
-        variables["INPUT"] = raw_stdin
-    else:
-        variables["INPUT"] = args_str
-    # Parse STDIN as JSON if provided
-    if raw_stdin:
-        try:
-            parsed = json.loads(raw_stdin)
-            variables.update(parsed)
-            log("Parsed STDIN as JSON")
-        except ValueError:
-            log("STDIN is not JSON, treating as raw string")
-            input_schema = meta.get("input", {}).get("schema", {})
-            if input_schema:
-                first_key = list(input_schema.keys())[0]
-                variables[first_key] = raw_stdin
-            else:
-                variables["input"] = raw_stdin
-    # Parse ARGS as JSON if provided (and no STDIN to avoid conflicts)
-    elif args_str:
-        try:
-            parsed = json.loads(args_str)
-            variables.update(parsed)
-            log("Parsed ARGS as JSON")
-        except ValueError:
-            log("ARGS is not JSON, treating as raw string")
-            input_schema = meta.get("input", {}).get("schema", {})
-            if input_schema:
-                first_key = list(input_schema.keys())[0]
-                variables[first_key] = args_str
-    
-    # Execute before: shell commands if present
-    before_commands = meta.get("before", {})
-    if before_commands:
-        execute_before_commands(before_commands, variables)
-    
-    validate_required_inputs(meta, variables)
-    prompt = render_template(template, variables)
-    log("Rendered prompt: %s" % prompt)
-    output_config = meta.get("output", {})
+        raise ValueError("No provider in model string")
 
     # Build tool search paths
     search_paths = []
@@ -402,80 +334,382 @@ def main():
     base_url = resolve_base_url(provider, meta)
     effective_provider = "openai" if (base_url or provider in ("ollama", "openai")) else provider
 
-    read_patterns = []
-    if meta.get("files") is not None:
-        if not isinstance(meta.get("files"), list):
-            cprint(RED, "Error: 'files' frontmatter must be a list")
+    if provider == "test":
+        url, api_key = None, None
+    else:
+        if base_url:
+            url, api_key = get_provider_config(provider, base_url)
+        else:
+            url, api_key = get_provider_config(provider)
+
+    return {
+        "meta": meta,
+        "model_str": model_str,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "effective_provider": effective_provider,
+        "url": url,
+        "api_key": api_key,
+        "tools": tools,
+    }
+
+
+def handle_session_command(line, state, args, prompt_path, pending_response=None):
+    """Handle /save and /load. Returns one of:
+      - ("none", None)      : not a session command; caller processes line.
+      - ("handled", None)   : command handled; caller should re-prompt.
+      - ("loaded", None)    : context loaded; caller should re-evaluate state.
+    """
+    stripped = line.strip()
+    if stripped.startswith("/save"):
+        parts = stripped.split(None, 1)
+        filename = parts[1].strip() if len(parts) > 1 else (get_conf("autosave_file") or ".runprompt.context.json")
+        try:
+            messages_to_save = list(state["messages"])
+            if pending_response is not None:
+                messages_to_save.append(build_assistant_message(pending_response))
+            save_context(
+                filename,
+                state["meta"],
+                messages_to_save,
+                state["read_files"],
+                state["variables"],
+                state["prompt"]
+            )
+            cprint(YELLOW, "Saved conversation context to %s" % filename)
+        except Exception as e:
+            cprint(RED, "Error saving context: %s" % e)
+        return ("handled", None)
+
+    elif stripped.startswith("/load"):
+        parts = stripped.split(None, 1)
+        filename = parts[1].strip() if len(parts) > 1 else ".runprompt.context.json"
+        try:
+            loaded = load_context_file(filename)
+            run_state = setup_run_state(loaded["meta"], args, prompt_path)
+            state["meta"] = loaded["meta"]
+            state["messages"] = loaded["messages"]
+            state["read_files"] = loaded["read_files"]
+            state["variables"] = loaded["variables"]
+            state["prompt"] = loaded["prompt"]
+            state["loaded_this_turn"] = True
+            state.update(run_state)
+            cprint(YELLOW, "Loaded conversation context from %s" % filename)
+            return ("loaded", None)
+        except Exception as e:
+            cprint(RED, "Error loading context: %s" % e)
+            return ("handled", None)
+
+    return ("none", None)
+
+
+def refresh_updated_files(read_files, prompt, effective_provider, messages):
+    """Re-read files whose mtime advanced. Returns a system-note string
+    (possibly empty) to prepend to the user's next message."""
+    updated_files = []
+    for f in read_files:
+        if not f.get("is_url"):
+            try:
+                current_mtime = os.path.getmtime(f["path"])
+                if "mtime" not in f:
+                    f["mtime"] = current_mtime
+                elif current_mtime > f["mtime"]:
+                    mode = 'rb' if f["is_binary"] else 'r'
+                    kwargs = {} if f["is_binary"] else {'encoding': 'utf-8', 'errors': 'replace'}
+                    with open(f["path"], mode, **kwargs) as file_obj:
+                        f["content"] = file_obj.read()
+                    f["mtime"] = current_mtime
+                    updated_files.append(f["path"])
+            except OSError:
+                pass
+    
+    if updated_files:
+        if prompt and messages:
+            messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
+        return "[System note: The following files were modified externally: %s. The file contents at the beginning of this context have been updated to reflect the latest versions.]\n\n" % ", ".join(updated_files)
+    return ""
+
+
+def read_user_turn(state, args, prompt_path, pending_response=None):
+    """Read input, handling /save, /load, /edit, /drop, /read and file
+    refresh. Returns the user text to send, or None on EOF."""
+    while True:
+        user_input = chat_read_input()
+        if user_input is None:
+            return None
+        
+        action, _ = handle_session_command(user_input, state, args, prompt_path, pending_response)
+        if action == "handled":
+            continue
+        elif action == "loaded":
+            if state["messages"] and state["messages"][-1]["role"] == "assistant":
+                continue
+            else:
+                return ""
+
+        old_num_files = len(state["read_files"])
+        processed_input = process_chat_commands(user_input, state["tools"], state["read_files"], state["effective_provider"])
+        
+        if len(state["read_files"]) > old_num_files and state["messages"]:
+            log("Files added via /read, rebuilding first message content")
+            state["messages"][0]["content"] = build_content_with_files(state["prompt"], state["read_files"], state["effective_provider"])
+            
+        if processed_input:
+            note = refresh_updated_files(state["read_files"], state["prompt"], state["effective_provider"], state["messages"])
+            return note + processed_input
+
+
+# === MAIN ENTRY POINT ===
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+    init_config(args)
+
+    if get_conf("insecure"):
+        import ssl
+        ssl._create_default_https_context = ssl._create_unverified_context
+
+    if args.clear_cache:
+        clear_cache()
+        sys.exit(0)
+
+    load_file = get_conf("load")
+
+    if len(args.remaining) < 1 and not get_conf("chat") and not args.prompt and not load_file:
+        print("Usage: runprompt [options] <prompt_file>", file=sys.stderr)
+        print("Try 'runprompt --help' for more information.", file=sys.stderr)
+        sys.exit(1)
+
+    state = {
+        "meta": {},
+        "messages": [],
+        "read_files": [],
+        "variables": {},
+        "prompt": "",
+        "tools": {},
+        "loaded_this_turn": False,
+    }
+
+    prompt_path = None
+
+    if load_file:
+        if not os.path.exists(load_file):
+            cprint(RED, "Error: Loaded context file does not exist: %s" % load_file)
             sys.exit(1)
-        # Render template variables in files: patterns
-        raw_patterns = meta.get("files") or []
-        for pattern in raw_patterns:
-            rendered_pattern = render_template(pattern, variables)
-            read_patterns.append(rendered_pattern)
+        try:
+            loaded = load_context_file(load_file)
+            state["meta"] = loaded.get("meta", {})
+            state["messages"] = loaded.get("messages", [])
+            state["read_files"] = loaded.get("read_files", [])
+            state["variables"] = loaded.get("variables", {})
+            state["prompt"] = loaded.get("prompt", "")
+        except Exception as e:
+            cprint(RED, "Error: Failed to load context file: %s" % e)
+            sys.exit(1)
+    else:
+        raw_stdin = read_stdin()
 
-    if args.read:
-        read_patterns.extend(args.read)
+        # Determine if we have a prompt_path
+        if args.remaining:
+            first_pos = args.remaining[0]
+            if args.prompt:
+                try:
+                    pos_idx = sys.argv.index(first_pos)
+                except ValueError:
+                    pos_idx = -1
 
-    # Read files from --read flags and prompt frontmatter
-    read_files = []
-    if read_patterns:
-        read_files = read_files_for_context(read_patterns, effective_provider)
-        log("Read %d file(s) for context" % len(read_files))
+                prompt_idx = -1
+                for idx, arg in enumerate(sys.argv):
+                    if arg in ("-p", "--prompt") or arg.startswith("-p=") or arg.startswith("--prompt="):
+                        prompt_idx = idx
+                        break
 
-    is_chat = get_conf("chat") or meta.get("chat", False)
+                if pos_idx != -1 and prompt_idx != -1 and pos_idx < prompt_idx:
+                    if os.path.isfile(first_pos):
+                        prompt_path = first_pos
+                        log("Detected prompt file before prompt flag: %s" % prompt_path)
+            else:
+                prompt_path = first_pos
 
-    if not model_str and is_chat:
+        # Parse prompt file if present
+        file_meta = {}
+        file_template = ""
+        if prompt_path:
+            file_meta, file_template = parse_prompt_file(prompt_path)
+            extra_args = args.remaining[1:] if len(args.remaining) > 1 else []
+            log("Parsed prompt file: %s" % prompt_path)
+        else:
+            extra_args = args.remaining
+
+        # Parse inline prompt if present
+        inline_meta = {}
+        inline_template = ""
+        if args.prompt:
+            if args.prompt == "-":
+                raw_prompt = raw_stdin or ""
+                raw_stdin = None  # Consumed as the template, so it's no longer available for {{STDIN}}
+            else:
+                raw_prompt = args.prompt
+            inline_meta, inline_template = parse_prompt_content(raw_prompt)
+            log("Parsed inline prompt")
+
+        # Merge metadata and templates
+        meta = {}
+        meta.update(file_meta)
+        meta.update(inline_meta)
+
+        if args.prompt:
+            template = inline_template
+        else:
+            template = file_template
+
+        args_str = " ".join(extra_args)
+        log("Extra args: %s" % args_str)
+        variables = {"STDIN": raw_stdin or "", "ARGS": args_str}
+        # Determine INPUT: prefer STDIN if provided, otherwise use ARGS
+        if raw_stdin:
+            variables["INPUT"] = raw_stdin
+        else:
+            variables["INPUT"] = args_str
+        # Parse STDIN as JSON if provided
+        if raw_stdin:
+            try:
+                parsed = json.loads(raw_stdin)
+                variables.update(parsed)
+                log("Parsed STDIN as JSON")
+            except ValueError:
+                log("STDIN is not JSON, treating as raw string")
+                input_schema = meta.get("input", {}).get("schema", {})
+                if input_schema:
+                    first_key = list(input_schema.keys())[0]
+                    variables[first_key] = raw_stdin
+                else:
+                    variables["input"] = raw_stdin
+        # Parse ARGS as JSON if provided (and no STDIN to avoid conflicts)
+        elif args_str:
+            try:
+                parsed = json.loads(args_str)
+                variables.update(parsed)
+                log("Parsed ARGS as JSON")
+            except ValueError:
+                log("ARGS is not JSON, treating as raw string")
+                input_schema = meta.get("input", {}).get("schema", {})
+                if input_schema:
+                    first_key = list(input_schema.keys())[0]
+                    variables[first_key] = args_str
+        
+        # Execute before: shell commands if present
+        before_commands = meta.get("before", {})
+        if before_commands:
+            execute_before_commands(before_commands, variables)
+        
+        validate_required_inputs(meta, variables)
+        prompt = render_template(template, variables)
+        log("Rendered prompt: %s" % prompt)
+
+        read_patterns = []
+        if meta.get("files") is not None:
+            if not isinstance(meta.get("files"), list):
+                cprint(RED, "Error: 'files' frontmatter must be a list")
+                sys.exit(1)
+            # Render template variables in files: patterns
+            raw_patterns = meta.get("files") or []
+            for pattern in raw_patterns:
+                rendered_pattern = render_template(pattern, variables)
+                read_patterns.append(rendered_pattern)
+
+        if args.read:
+            read_patterns.extend(args.read)
+
+        state["meta"] = meta
+        state["variables"] = variables
+        state["prompt"] = prompt
+
+    # Run setup_run_state
+    try:
+        run_state = setup_run_state(state["meta"], args, prompt_path)
+        state.update(run_state)
+    except ValueError as e:
+        cprint(RED, "Error: %s" % e)
+        sys.exit(1)
+
+    if not load_file:
+        # Read files from --read flags and prompt frontmatter
+        read_files = []
+        if read_patterns:
+            read_files = read_files_for_context(read_patterns, state["effective_provider"])
+            log("Read %d file(s) for context" % len(read_files))
+        state["read_files"] = read_files
+
+    is_chat_initial = get_conf("chat") or state["meta"].get("chat", False)
+
+    if not state["model_str"] and is_chat_initial:
         cprint(RED, "No model specified. Use --model or set one in config.")
         sys.exit(1)
-    if provider == "test":
+    if state["provider"] == "test":
         response = load_test_response(prompt_path)
-        result = extract_response(response, output_config)
+        result = extract_response(response, state["meta"].get("output", {}))
         print(result)
         return
-
-    if base_url:
-        url, api_key = get_provider_config(provider, base_url)
-    else:
-        url, api_key = get_provider_config(provider)
 
     # Check cache
-    cached_response = None
     key = None
-    if use_cache:
-        key = cache_key(prompt, meta)
+    if get_conf("cache", False) and not load_file:
+        key = cache_key(state["prompt"], state["meta"])
         log("Cache key: %s" % key)
         cached_response = cache_get(key)
-
-    if cached_response:
-        response = cached_response
-        result = extract_response(response, output_config)
-        print(result)
-        return
+        if cached_response:
+            response = cached_response
+            result = extract_response(response, state["meta"].get("output", {}))
+            print(result)
+            return
 
     # Build initial messages with optional file attachments
-    messages = []
-    if prompt or (read_files and not is_chat):
-        user_content = build_content_with_files(prompt, read_files,
-                                                effective_provider)
-        messages = [{"role": "user", "content": user_content}]
+    if not load_file:
+        if state["prompt"] or (state["read_files"] and not is_chat_initial):
+            user_content = build_content_with_files(state["prompt"], state["read_files"],
+                                                    state["effective_provider"])
+            state["messages"] = [{"role": "user", "content": user_content}]
 
-    # In chat mode with no initial prompt, ask for first input now
-    if is_chat and not messages:
-        while True:
-            first_input = chat_read_input()
-            if first_input is None:
+        # In chat mode with no initial prompt, ask for first input now
+        if is_chat_initial and not state["messages"]:
+            state["loaded_this_turn"] = False
+            user_input = read_user_turn(state, args, prompt_path)
+            if user_input is None:
                 return
-            first_input = process_chat_commands(first_input, tools, read_files, effective_provider)
-            if first_input:
-                break
-        prompt = first_input
-        user_content = build_content_with_files(prompt, read_files, effective_provider)
-        messages = [{"role": "user", "content": user_content}]
+            if user_input:
+                if state["loaded_this_turn"]:
+                    state["messages"].append({"role": "user", "content": user_input})
+                else:
+                    user_content = build_content_with_files(user_input, state["read_files"], state["effective_provider"])
+                    state["messages"] = [{"role": "user", "content": user_content}]
+
+    if load_file:
+        if state["messages"] and state["messages"][-1]["role"] == "assistant":
+            state["loaded_this_turn"] = False
+            user_input = read_user_turn(state, args, prompt_path)
+            if user_input is None:
+                return
+            if user_input:
+                state["messages"].append({"role": "user", "content": user_input})
 
     # Tool execution / Chat loop
     while True:
-        response = make_request(url, api_key, model, messages, output_config,
-                                effective_provider, tools if tools else None)
+        if not state["messages"]:
+            cprint(RED, "Error: Conversation history is empty. Suggest running with --chat.")
+            sys.exit(1)
+
+        response = make_request(
+            state["url"],
+            state["api_key"],
+            state["model"],
+            state["messages"],
+            state["meta"].get("output", {}),
+            state["effective_provider"],
+            state["tools"] if state["tools"] else None
+        )
 
         # Print usage info
         print_usage(response)
@@ -493,10 +727,10 @@ def main():
 
         if not user_tool_calls:
             # No more tool calls
-            if use_cache and key:
-                cache_set(key, response, effective_provider)
+            if get_conf("cache", False) and key:
+                cache_set(key, response, state["effective_provider"])
             if args.save_response:
-                save_response(response, effective_provider, args.save_response)
+                save_response(response, state["effective_provider"], args.save_response)
             
             # If there was an extract tool call, output that and exit
             for tc in tool_calls:
@@ -506,66 +740,56 @@ def main():
             
             # Otherwise we already printed text content above
             if not text_content:
-                result = extract_response(response, output_config)
+                result = extract_response(response, state["meta"].get("output", {}))
                 if result:
                     print(result)
             
+            state["messages"].append(build_assistant_message(response))
+
+            if get_conf("autosave", False):
+                autosave_file = get_conf("autosave_file") or ".runprompt.context.json"
+                try:
+                    save_context(
+                        autosave_file,
+                        state["meta"],
+                        state["messages"],
+                        state["read_files"],
+                        state["variables"],
+                        state["prompt"]
+                    )
+                except Exception as e:
+                    cprint(YELLOW, "Warning: Auto-save failed: %s" % e)
+
+            is_chat = get_conf("chat") or state["meta"].get("chat", False)
             if not is_chat:
                 return
                 
             # In chat mode, prompt for next input
-            while True:
-                user_input = chat_read_input()
-                if user_input is None:
-                    return
-                old_num_files = len(read_files)
-                user_input = process_chat_commands(user_input, tools, read_files, effective_provider)
-                if len(read_files) > old_num_files and messages:
-                    log("Files added via /read, rebuilding first message content")
-                    messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
-                if user_input:
-                    break
-
-            updated_files = []
-            for f in read_files:
-                if not f.get("is_url"):
-                    try:
-                        current_mtime = os.path.getmtime(f["path"])
-                        if f.get("mtime") and current_mtime > f["mtime"]:
-                            mode = 'rb' if f["is_binary"] else 'r'
-                            kwargs = {} if f["is_binary"] else {'encoding': 'utf-8', 'errors': 'replace'}
-                            with open(f["path"], mode, **kwargs) as file_obj:
-                                f["content"] = file_obj.read()
-                            f["mtime"] = current_mtime
-                            updated_files.append(f["path"])
-                    except OSError:
-                        pass
+            state["loaded_this_turn"] = False
+            user_input = read_user_turn(state, args, prompt_path, pending_response=response)
+            if user_input is None:
+                return
             
-            if updated_files and prompt and messages:
-                messages[0]["content"] = build_content_with_files(prompt, read_files, effective_provider)
-                note = "[System note: The following files were modified externally: %s. The file contents at the beginning of this context have been updated to reflect the latest versions.]\n\n" % ", ".join(updated_files)
-                user_input = note + user_input
-
-            messages.append(build_assistant_message(response))
-            messages.append({"role": "user", "content": user_input})
+            if user_input:
+                state["messages"].append({"role": "user", "content": user_input})
             continue
 
         # Add assistant message to conversation
-        messages.append(build_assistant_message(response))
+        state["messages"].append(build_assistant_message(response))
 
         # Process each tool call
         for tc in user_tool_calls:
             tool_name = tc["name"]
             tool_args = tc["arguments"]
 
-            if tool_name not in tools:
+            if tool_name not in state["tools"]:
                 error_msg = "Unknown tool: %s" % tool_name
                 cprint(RED, error_msg)
-                messages.append(build_tool_result_message(
-                    tc, None, error_msg, effective_provider))
+                state["messages"].append(build_tool_result_message(
+                    tc, None, error_msg, state["effective_provider"]))
                 continue
 
-            tool_func = tools[tool_name]["func"]
+            tool_func = state["tools"][tool_name]["func"]
 
             # Always print tool call summary
             print_tool_call(tool_name, tool_args)
@@ -580,8 +804,8 @@ def main():
 
             if not approved:
                 error_msg = "Tool execution declined by user"
-                messages.append(build_tool_result_message(
-                    tc, None, error_msg, effective_provider))
+                state["messages"].append(build_tool_result_message(
+                    tc, None, error_msg, state["effective_provider"]))
                 continue
 
             # Execute the tool
@@ -590,8 +814,8 @@ def main():
             if error:
                 cprint(RED, error)
 
-            messages.append(build_tool_result_message(
-                tc, result, error, effective_provider))
+            state["messages"].append(build_tool_result_message(
+                tc, result, error, state["effective_provider"]))
 
 
 HELP_EPILOG = """\
@@ -599,6 +823,12 @@ Input:
   Pipe JSON to set template variables: echo '{"name": "World"}' | runprompt hello.prompt
   Pipe text for {{STDIN}} variable:    echo "some text" | runprompt summarize.prompt
   Pass args for {{ARGS}} variable:     runprompt hello.prompt Some text here
+
+Save/Load Context:
+  --load [FILE]           Load conversation context from file (defaults to .runprompt.context.json)
+  --autosave              Auto-save conversation context after each turn
+  /save [FILE]            In-chat command to save conversation context
+  /load [FILE]            In-chat command to load conversation context
 
 Config files (lowest to highest priority):
   ~/.runprompt/config.yml
@@ -691,6 +921,10 @@ def parse_args(args):
                         metavar="PATH", help="Add directory to tool import path")
     parser.add_argument("--chat", action="store_true",
                         help="Interactive chat mode: prompt for input after each response")
+    parser.add_argument("--load", nargs="?", const=".runprompt.context.json",
+                        help="Load conversation context from file")
+    parser.add_argument("--autosave", action="store_true",
+                        help="Auto-save conversation context after each turn")
     parser.add_argument("--insecure", action="store_true",
                         help="Allow insecure HTTPS connections (disables TLS verification)")
     parser.add_argument("--timeout", type=float, metavar="SECONDS",
@@ -1907,6 +2141,15 @@ def _write_history(response, filepath):
 def read_interactive_input(prompt_text: str):
     """Read a line of interactive user input with readline history support."""
     global _HISTORY_LOADED
+    if not sys.stdin.isatty():
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                return None
+            return line.rstrip("\r\n")
+        except Exception:
+            pass
+
     try:
         import readline as _rl
         _history_file = get_conf("history_file")

@@ -44,6 +44,8 @@ run_test "chat tests" python3 tests/test-chat.py
 
 run_test "network config tests" python3 tests/test-network-config.py
 
+run_test "save/load tests" python3 tests/test-save-load.py
+
 echo ""
 echo "Passed: $pass, Failed: $fail"
 

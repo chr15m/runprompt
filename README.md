@@ -206,6 +206,18 @@ During an interactive chat session, you can use special commands to dynamically 
 - `/read <path-or-url>`: Read a file or URL and append its contents to the chat context.
 - `/edit <path>`: Dynamically expose a `write_file` tool to the LLM for the specified file, allowing it to write or edit that file.
 - `/drop <path>`: Remove the `write_file` tool for the specified file.
+- `/save [FILE]`: Save the current conversation context to a JSON file (defaults to `.runprompt.context.json`).
+- `/load [FILE]`: Load a conversation context from a JSON file (defaults to `.runprompt.context.json`).
+
+### Saving and loading context
+
+You can persist your interactive chat sessions to a JSON file and resume them later.
+
+- **CLI flag**: Start or resume a session with `--load [FILE]`. A bare `--load` resumes from the default `.runprompt.context.json` file.
+- **In-chat commands**: Use `/save [FILE]` and `/load [FILE]` during a chat session.
+- **Auto-save**: Enable auto-save with `--autosave`, `RUNPROMPT_AUTOSAVE=1` env var, or `autosave: true` in your config. This automatically saves the session after every turn. You can customize the target file with `autosave_file: path` in your config or `RUNPROMPT_AUTOSAVE_FILE` env var.
+
+When saving, if the target file already exists, it is backed up to `[filename].bak` before being overwritten. Note that loading a context rebuilds tools from `meta` (dynamic `/edit` tools are not persisted).
 
 ### CLI overrides
 
@@ -580,6 +592,8 @@ Configuration values can be set from config file, env var or command line flag, 
 | History file | `history_file: .history` | `RUNPROMPT_HISTORY_FILE` | |
 | Insecure TLS | `insecure: true` | `RUNPROMPT_INSECURE=1` | `--insecure` |
 | LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
+| Auto-save | `autosave: true` | `RUNPROMPT_AUTOSAVE=1` | `--autosave` |
+| Auto-save file | `autosave_file: path` | `RUNPROMPT_AUTOSAVE_FILE` | |
 
 ### API keys
 
