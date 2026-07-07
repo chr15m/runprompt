@@ -82,6 +82,11 @@ CYAN = "\033[36m"
 RESET = "\033[0m"
 TIMEOUT = 120
 
+
+class LLMRequestError(Exception):
+    """Raised when an LLM API request or network call fails."""
+    pass
+
 # Session cost accumulator (None means unknown)
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
@@ -701,15 +706,39 @@ def main():
             cprint(RED, "Error: Conversation history is empty. Suggest running with --chat.")
             sys.exit(1)
 
-        response = make_request(
-            state["url"],
-            state["api_key"],
-            state["model"],
-            state["messages"],
-            state["meta"].get("output", {}),
-            state["effective_provider"],
-            state["tools"] if state["tools"] else None
-        )
+        try:
+            response = make_request(
+                state["url"],
+                state["api_key"],
+                state["model"],
+                state["messages"],
+                state["meta"].get("output", {}),
+                state["effective_provider"],
+                state["tools"] if state["tools"] else None
+            )
+        except LLMRequestError as e:
+            err_msg = str(e.args[0])
+            cprint(RED, err_msg)
+            if len(e.args) > 1:
+                for func, arg in e.args[1]:
+                    func(arg)
+            
+            is_chat = get_conf("chat") or state["meta"].get("chat", False)
+            if is_chat:
+                # Roll back the last user message so the context remains clean
+                if state["messages"] and state["messages"][-1]["role"] == "user":
+                    state["messages"].pop()
+                
+                # Prompt for next input
+                state["loaded_this_turn"] = False
+                user_input = read_user_turn(state, args, prompt_path)
+                if user_input is None:
+                    return
+                if user_input:
+                    state["messages"].append({"role": "user", "content": user_input})
+                continue
+            else:
+                sys.exit(1)
 
         # Print usage info
         print_usage(response)
@@ -1500,27 +1529,26 @@ def make_request(url, api_key, model, messages, output_config, provider, tools=N
         req_preview = data[:200].decode("utf-8", errors="replace")
         req_preview = req_preview.replace("\r", " ").replace("\n", " ")
 
-        cprint(RED, "LLM request failed (model=%s): %s" % (model, message))
-        cprint(YELLOW, "Request preview: %s" % req_preview)
-
+        err_msg = "LLM request failed (model=%s): %s\nRequest preview: %s" % (model, message, req_preview)
+        
         # Check if this is an invalid model error and suggest alternatives
         msg_lower = message.lower()
+        suggestions = []
         if "is not a valid model" in msg_lower or "model not found" in msg_lower \
            or "does not exist" in msg_lower or "invalid model" in msg_lower:
             if "openrouter.ai" in url:
-                suggest_openrouter_models(model)
+                suggestions.append((suggest_openrouter_models, model))
             elif "api.openai.com" in url:
-                suggest_openai_models(api_key)
+                suggestions.append((suggest_openai_models, api_key))
             elif "generativelanguage.googleapis.com" in url:
-                suggest_googleai_models(api_key)
-        sys.exit(1)
+                suggestions.append((suggest_googleai_models, api_key))
+        
+        raise LLMRequestError(err_msg, suggestions)
     except (socket.gaierror, socket.timeout, urllib.error.URLError) as e:
         error_detail = str(e.reason) if hasattr(e, 'reason') else str(e)
-        cprint(RED, "Network error: %s" % error_detail)
-        print("Please check your network connection and verify the remote "
-              "server is accessible.", file=sys.stderr)
+        err_msg = "Network error: %s\nPlease check your network connection and verify the remote server is accessible." % error_detail
         log("Network error details: %s" % e)
-        sys.exit(1)
+        raise LLMRequestError(err_msg)
 
 
 def extract_response(response, output_config):
