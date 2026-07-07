@@ -91,6 +91,7 @@ class LLMRequestError(Exception):
 SESSION_COST = 0.0
 SESSION_COST_KNOWN = True
 _HISTORY_LOADED = False
+_CTRL_C_COUNT = 0
 
 
 # === CONFIGURATION CASCADE ===
@@ -443,6 +444,8 @@ def read_user_turn(state, args, prompt_path, pending_response=None):
         user_input = chat_read_input()
         if user_input is None:
             return None
+        if user_input == "\x03":
+            continue
         
         action, _ = handle_session_command(user_input, state, args, prompt_path, pending_response)
         if action == "handled":
@@ -2168,7 +2171,7 @@ def _write_history(response, filepath):
 
 def read_interactive_input(prompt_text: str):
     """Read a line of interactive user input with readline history support."""
-    global _HISTORY_LOADED
+    global _HISTORY_LOADED, _CTRL_C_COUNT
     if not sys.stdin.isatty():
         try:
             line = sys.stdin.readline()
@@ -2206,13 +2209,21 @@ def read_interactive_input(prompt_text: str):
         response = None
         try:
             response = input(prompt_text)
-        except (EOFError, KeyboardInterrupt):
+            _CTRL_C_COUNT = 0
+        except KeyboardInterrupt:
+            _CTRL_C_COUNT += 1
+            if _CTRL_C_COUNT >= 2:
+                sys.stderr.write("\n")
+                sys.exit(0)
+            sys.stderr.write("\n(Press Ctrl-C again to exit)\n")
+            return "\x03"
+        except EOFError:
             sys.stderr.write("\n")
             return None
         finally:
             sys.stdout.write(RESET)
             sys.stdout.flush()
-            if _rl is not None:
+            if _rl is not None and response is not None:
                 _write_history(response, _history_file)
         return response
 
@@ -2235,7 +2246,15 @@ def read_interactive_input(prompt_text: str):
         response = None
         try:
             response = input()
-        except (EOFError, KeyboardInterrupt):
+            _CTRL_C_COUNT = 0
+        except KeyboardInterrupt:
+            _CTRL_C_COUNT += 1
+            if _CTRL_C_COUNT >= 2:
+                sys.stderr.write("\n")
+                sys.exit(0)
+            sys.stderr.write("\n(Press Ctrl-C again to exit)\n")
+            return "\x03"
+        except EOFError:
             sys.stderr.write("\n")
             return None
         finally:
@@ -2262,6 +2281,8 @@ def chat_read_input():
         response = read_interactive_input(prompt)
         if response is None:
             return None
+        if response == "\x03":
+            return "\x03"
         response = response.strip()
         return response if response else None
     except RuntimeError:
