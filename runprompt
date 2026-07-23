@@ -457,7 +457,9 @@ def read_user_turn(state, args, prompt_path, pending_response=None):
                 return ""
 
         old_num_files = len(state["read_files"])
-        processed_input = process_chat_commands(user_input, state["tools"], state["read_files"], state["effective_provider"])
+        processed_input = process_chat_commands(
+            user_input, state["tools"], state["read_files"],
+            state["effective_provider"], state["messages"])
         
         if len(state["read_files"]) > old_num_files and state["messages"]:
             log("Files added via /read, rebuilding first message content")
@@ -2289,8 +2291,54 @@ def chat_read_input():
         return None
 
 
-def process_chat_commands(user_input, tools, read_files=None, effective_provider=None):
-    """Process /edit, /drop and /read commands in chat input, updating tools and read_files."""
+def handle_run_command(cmd, messages):
+    """Run a shell command, show its output, optionally append it to messages."""
+    import subprocess
+    shell = os.environ.get("SHELL", "/bin/sh")
+    proc = subprocess.Popen(
+        [shell, "-c", cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    interrupted = False
+    try:
+        stdout, stderr = proc.communicate()
+    except KeyboardInterrupt:
+        interrupted = True
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        sys.stderr.write("\n")
+    output = stdout or ""
+    if stderr:
+        output += ("\n" if output else "") + stderr
+    if output:
+        sys.stderr.write(output)
+        if not output.endswith("\n"):
+            sys.stderr.write("\n")
+    if interrupted:
+        cprint(YELLOW, "(interrupted)")
+    elif proc.returncode != 0:
+        cprint(YELLOW, "(exit code: %d)" % proc.returncode)
+    if not output.strip():
+        cprint(YELLOW, "(no output)")
+        return
+    response = read_tty_line("Add the output to the chat? [Y/n] ")
+    if response is not None and response.lower() in ("n", "no"):
+        return
+    entry = "$ %s\n%s" % (cmd, output.rstrip())
+    if interrupted:
+        entry += "\n(interrupted)"
+    elif proc.returncode != 0:
+        entry += "\n(exit code: %d)" % proc.returncode
+    messages.append({"role": "user", "content": entry})
+    cprint(YELLOW, "Added output to chat context")
+
+
+def process_chat_commands(user_input, tools, read_files=None,
+                          effective_provider=None, messages=None):
+    """Process /edit, /drop, /read and /run commands in chat input,
+    updating tools, read_files and messages."""
     if not user_input:
         return user_input
     lines = user_input.split('\n')
@@ -2330,6 +2378,11 @@ def process_chat_commands(user_input, tools, read_files=None, effective_provider
                         cprint(YELLOW, "Added file to context: %s" % nf["path"])
                     else:
                         cprint(YELLOW, "File already in context: %s" % nf["path"])
+            continue
+        elif stripped.startswith('/run '):
+            cmd = stripped[5:].strip()
+            if cmd and messages is not None:
+                handle_run_command(cmd, messages)
             continue
         new_lines.append(line)
     return '\n'.join(new_lines).strip()

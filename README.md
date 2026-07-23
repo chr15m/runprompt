@@ -208,6 +208,7 @@ During an interactive chat session, you can use special commands to dynamically 
 - `/drop <path>`: Remove the `write_file` tool for the specified file.
 - `/save [FILE]`: Save the current conversation context to a JSON file (defaults to `.runprompt.context.json`).
 - `/load [FILE]`: Load a conversation context from a JSON file (defaults to `.runprompt.context.json`).
+- `/run <command>`: Run a shell command and optionally add its output to the chat context. Ctrl-C interrupts the command and keeps any partial output.
 
 ### Saving and loading context
 
