@@ -2675,6 +2675,15 @@ def build_media_block(file_info, provider):
     if is_url and content is None and provider != "anthropic":
         if mime_type and mime_type.startswith("image/"):
             return {"type": "image_url", "image_url": {"url": path}}
+        if mime_type == "application/pdf" and provider == "openrouter":
+            filename = os.path.basename(path) or "document.pdf"
+            return {
+                "type": "file",
+                "file": {
+                    "filename": filename,
+                    "file_data": path
+                }
+            }
         # Non-image URL without content - just describe it
         return {"type": "text", "text": "[URL: %s (%s)]" % (path, mime_type)}
     
@@ -2712,6 +2721,17 @@ def build_media_block(file_info, provider):
         }
     else:
         # OpenAI format (also used by Google AI compat layer, OpenRouter)
+        if provider == "openrouter" and mime_type == "application/pdf":
+            filename = os.path.basename(path) or "document.pdf"
+            data_url = "data:%s;base64,%s" % (mime_type, b64_data)
+            return {
+                "type": "file",
+                "file": {
+                    "filename": filename,
+                    "file_data": data_url
+                }
+            }
+
         if mime_type.startswith("audio/"):
             # OpenAI / OpenRouter format
             audio_format = "mp3"
