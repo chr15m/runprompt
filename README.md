@@ -587,6 +587,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | Cache | `cache: true` | `RUNPROMPT_CACHE=1` | `--cache` |
 | Cache dir | `cache_dir: /path` | `RUNPROMPT_CACHE_DIR` | `--cache-dir` |
 | Safe yes | `safe_yes: true` | `RUNPROMPT_SAFE_YES=1` | `--safe-yes` |
+| Show shell I/O | `show_shell: true` | `RUNPROMPT_SHOW_SHELL=1` | `--show-shell` |
 | Verbose | `verbose: true` | `RUNPROMPT_VERBOSE=1` | `--verbose` |
 | Chat | `chat: true` | `RUNPROMPT_CHAT=1` | `--chat` |
 | Chat history | `chat_history: true` | `RUNPROMPT_CHAT_HISTORY=1` | |

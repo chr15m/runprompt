@@ -49,7 +49,7 @@ CONFIG_KEYS = {
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
-    "insecure", "autosave", "autosave_file", "load",
+    "insecure", "autosave", "autosave_file", "load", "show_shell",
 }
 
 PROVIDERS = {
@@ -145,7 +145,7 @@ def normalize_key(key):
 
 
 def get_conf(key, default=None):
-    """Get config value with cascade priority: files < env < args."""
+    """Get config value with cascade priority: files < meta < env < args."""
     key = normalize_key(key)
     # Check args first (highest priority)
     if key in CONFIG["args"]:
@@ -153,6 +153,9 @@ def get_conf(key, default=None):
     # Check env vars
     if key in CONFIG["env"]:
         return CONFIG["env"][key]
+    # Check prompt frontmatter
+    if "meta" in CONFIG and key in CONFIG["meta"]:
+        return CONFIG["meta"][key]
     # Check config files
     if key in CONFIG["files"]:
         return CONFIG["files"][key]
@@ -263,6 +266,7 @@ def setup_run_state(meta, args, prompt_path):
     Raises ValueError on missing model/provider.
     """
     meta = dict(meta)
+    CONFIG["meta"] = meta
     meta = apply_overrides(meta)
     # Apply model from config cascade if not in frontmatter
     if not meta.get("model"):
@@ -634,6 +638,7 @@ def main():
             read_patterns.extend(args.read)
 
         state["meta"] = meta
+        CONFIG["meta"] = meta
         state["variables"] = variables
         state["prompt"] = prompt
 
@@ -831,6 +836,9 @@ def main():
             # Check if safe-yes is enabled and tool is safe
             if get_conf("safe_yes") and is_tool_safe(tool_func):
                 log("Auto-approving safe tool: %s" % tool_name)
+                if get_conf("show_shell") and tool_name == "shell" and isinstance(tool_args, dict) and isinstance(tool_args.get("command"), str):
+                    sys.stderr.write("%s%s%s\n" % (CYAN, tool_args.get("command"), RESET))
+                    sys.stderr.flush()
                 approved = True
             else:
                 # Prompt user for confirmation
@@ -953,6 +961,8 @@ def parse_args(args):
                         help="Use custom Ollama endpoint (legacy)")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
+    parser.add_argument("--show-shell", action="store_true",
+                        help="Show full shell commands and stream their output")
     parser.add_argument("--chat", action="store_true",
                         help="Interactive chat mode: prompt for input after each response")
     parser.add_argument("--load", nargs="?", const=".runprompt.context.json",
@@ -1855,6 +1865,67 @@ def _run_subprocess_capture(cmd, timeout=30, env=None):
         )
 
 
+def _run_shell_command(cmd, timeout=30, show_output=False, env=None):
+    """Run shell command with subprocess.Popen, optionally streaming stdout/stderr."""
+    import subprocess
+    import selectors
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+    stdout_chunks = []
+    stderr_chunks = []
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, data=("stdout", stdout_chunks))
+    sel.register(proc.stderr, selectors.EVENT_READ, data=("stderr", stderr_chunks))
+
+    start_time = time.time()
+    open_streams = 2
+
+    try:
+        while open_streams > 0:
+            if timeout and (time.time() - start_time) > timeout:
+                proc.kill()
+                proc.wait()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+
+            events = sel.select(timeout=0.1)
+            for key, _ in events:
+                stream_type, chunks = key.data
+                try:
+                    raw = os.read(key.fileobj.fileno(), 4096)
+                except OSError:
+                    raw = b""
+                if not raw:
+                    try:
+                        sel.unregister(key.fileobj)
+                    except Exception:
+                        pass
+                    open_streams -= 1
+                    continue
+                text = raw.decode("utf-8", errors="replace")
+                chunks.append(text)
+                if show_output:
+                    sys.stderr.write(text)
+                    sys.stderr.flush()
+    except KeyboardInterrupt:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        sel.close()
+
+    proc.wait()
+    stdout_str = "".join(stdout_chunks)
+    stderr_str = "".join(stderr_chunks)
+    return proc.returncode, stdout_str, stderr_str
+
+
 def create_shell_tool(name, cmd, description, safe):
     """Create a shell tool function with the given command."""
     def shell_tool(args: str = "", **env_vars):
@@ -1873,19 +1944,21 @@ def create_shell_tool(name, cmd, description, safe):
         shell = env.get("SHELL", "/bin/sh")
         
         log("Running shell tool '%s': %s" % (name, full_cmd))
+        show = bool(get_conf("show_shell"))
         try:
-            result = _run_subprocess_capture(
+            returncode, stdout, stderr = _run_shell_command(
                 [shell, "-c", full_cmd],
                 timeout=30,
+                show_output=show,
                 env=env,
             )
-            if result.returncode == 0:
-                return result.stdout.rstrip('\n')
+            if returncode == 0:
+                return stdout.rstrip('\n')
             else:
                 return {
-                    "returncode": result.returncode,
-                    "stdout": result.stdout.rstrip('\n'),
-                    "stderr": result.stderr.rstrip('\n'),
+                    "returncode": returncode,
+                    "stdout": stdout.rstrip('\n'),
+                    "stderr": stderr.rstrip('\n'),
                 }
         except subprocess.TimeoutExpired:
             raise RuntimeError("Command timed out after 30 seconds")
@@ -2130,13 +2203,12 @@ def execute_tool(tool_func, args):
 
 
 def prompt_user_for_tool(tool_name, args):
+    if (tool_name == "shell" and isinstance(args, dict) and
+            isinstance(args.get("command"), str)):
+        sys.stderr.write("%s%s%s\n" % (CYAN, args.get("command"), RESET))
+        sys.stderr.flush()
     prompt_text = "Run this tool? [Y/n]: "
     while True:
-        if (tool_name == "shell" and isinstance(args, dict) and
-                isinstance(args.get("command"), str)):
-            sys.stderr.write("%s%s%s\n" % (CYAN, args.get("command"), RESET))
-            sys.stderr.flush()
-
         response = read_tty_line(prompt_text)
 
         if response is None:
@@ -3119,15 +3191,23 @@ def shell(command: str, timeout: float = 30):
     This tool executes the command using /bin/bash -lc. It is intentionally not
     marked safe.
     """
-    completed = _run_subprocess_capture(
-        ["/bin/bash", "-lc", command],
-        timeout=timeout,
-    )
+    import subprocess
+    show = bool(get_conf("show_shell"))
+    try:
+        returncode, stdout, stderr = _run_shell_command(
+            ["/bin/bash", "-lc", command],
+            timeout=timeout,
+            show_output=show,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Command timed out after %s seconds" % timeout)
+    except Exception as e:
+        raise RuntimeError("Command failed: %s" % str(e))
     return {
         "command": command,
-        "returncode": completed.returncode,
-        "stdout": completed.stdout,
-        "stderr": completed.stderr,
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
     }
 
 

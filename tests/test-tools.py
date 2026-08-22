@@ -916,6 +916,121 @@ def test_tool_calls_null_no_crash():
         server.shutdown()
 
 
+def test_show_shell_command_and_output():
+    """Test that --show-shell prints command before prompt and output after execution."""
+    responses = [
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_shell_test",
+                        "type": "function",
+                        "function": {
+                            "name": "shell",
+                            "arguments": '{"command": "echo show_shell_test_output"}'
+                        }
+                    }]
+                }
+            }]
+        },
+        {
+            "choices": [{
+                "message": {
+                    "content": "Done running command."
+                }
+            }]
+        }
+    ]
+    server = start_server(MOCK_PORT + 18, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 18)
+        env['OPENAI_API_KEY'] = 'test-key'
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', '--show-shell',
+             '--tools=builtin.shell', 'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        assert "echo show_shell_test_output" in stderr, \
+            "Expected command to be printed in stderr"
+        assert "show_shell_test_output" in stderr, \
+            "Expected command output to be printed in stderr"
+    finally:
+        server.shutdown()
+
+
+def test_show_shell_frontmatter():
+    """Test that show_shell: true in frontmatter streams output."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    prompt_file = os.path.join(temp_dir, "show_shell.prompt")
+    with open(prompt_file, "w") as f:
+        f.write("""---
+model: openai/gpt-4o
+show_shell: true
+tools:
+  - builtin.shell
+---
+Hello {{name}}
+""")
+    responses = [
+        {
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_shell_fm",
+                        "type": "function",
+                        "function": {
+                            "name": "shell",
+                            "arguments": '{"command": "echo fm_shell_stream_output"}'
+                        }
+                    }]
+                }
+            }]
+        },
+        {
+            "choices": [{
+                "message": {
+                    "content": "Done running."
+                }
+            }]
+        }
+    ]
+    server = start_server(MOCK_PORT + 19, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 19)
+        env['OPENAI_API_KEY'] = 'test-key'
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', prompt_file],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        assert "echo fm_shell_stream_output" in stderr, \
+            "Expected command to be printed in stderr"
+        assert "fm_shell_stream_output" in stderr, \
+            "Expected streamed output in stderr"
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
 if __name__ == '__main__':
     test("tools sent in request", test_tools_sent_in_request)
     test("tool schema generation", test_tool_schema_generation)
@@ -935,6 +1050,8 @@ if __name__ == '__main__':
     test("builtin factory without args warns", test_builtin_factory_without_args_warns)
     test("builtin wildcard skips factories", test_builtin_wildcard_skips_factories)
     test("tool_calls: null does not crash", test_tool_calls_null_no_crash)
+    test("show-shell command and output", test_show_shell_command_and_output)
+    test("show-shell frontmatter", test_show_shell_frontmatter)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
