@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [main]
+    branches: [main, dogfooding-new-features]
   pull_request:
     branches: [main]
 
