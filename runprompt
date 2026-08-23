@@ -48,15 +48,20 @@ CONFIG_KEYS = {
     "model", "default_model", "tool_path", "base_url", "ollama_base_url", "ollama_api_base",
     "openai_base_url", "openai_api_base", "cache", "cache_dir",
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
-    "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
-    "insecure", "autosave", "autosave_file", "load", "show_shell",
-    "follow_symlinks", "write_path_follow_symlinks",
+    "google_api_key", "openrouter_api_key", "requesty_api_key", "chat",
+    "chat_history", "history_file", "timeout", "insecure", "autosave",
+    "autosave_file", "load", "show_shell", "follow_symlinks",
+    "write_path_follow_symlinks",
 }
 
 PROVIDERS = {
     "openrouter": {
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "env": "OPENROUTER_API_KEY",
+    },
+    "requesty": {
+        "url": "https://router.requesty.ai/v1/chat/completions",
+        "env": "REQUESTY_API_KEY",
     },
     "googleai": {
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
