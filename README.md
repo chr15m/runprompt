@@ -204,8 +204,8 @@ To persist your readline history across sessions (for chat mode and the `ask_use
 During an interactive chat session, you can use special commands to dynamically modify the context or tools:
 
 - `/read <path-or-url>`: Read a file or URL and append its contents to the chat context.
-- `/edit <path>`: Dynamically expose a `write_file` tool to the LLM for the specified file, allowing it to write or edit that file.
-- `/drop <path>`: Remove the `write_file` tool for the specified file.
+- `/edit <path>`: Dynamically expose a `write_file` tool (for a file) or `write_path` tool (for a directory or `.`) to the LLM, allowing it to write or edit files.
+- `/drop <path>`: Remove the `write_file` or `write_path` tool for the specified path.
 - `/save [FILE]`: Save the current conversation context to a JSON file (defaults to `.runprompt.context.json`).
 - `/load [FILE]`: Load a conversation context from a JSON file (defaults to `.runprompt.context.json`).
 - `/run <command>`: Run a shell command and optionally add its output to the chat context. Ctrl-C interrupts the command and keeps any partial output.
@@ -499,8 +499,9 @@ Available builtin tools:
 | `ask_user` | Ask the user a question and return their response |
 | `shell` | Run a shell command and return stdout/stderr/returncode |
 | `write_file('path')` | Write content to a specific file (parameterized) |
+| `write_path('dir')` | Write or edit files inside a specific directory (parameterized) |
 
-The `calculator`, `datetime`, `fetch_clean`, `sleep`, and `ask_user` tools are marked as safe (auto-approved with `--safe-yes`). The `shell` and `write_file` tools require confirmation since they can run commands / modify the filesystem.
+The `calculator`, `datetime`, `fetch_clean`, `sleep`, and `ask_user` tools are marked as safe (auto-approved with `--safe-yes`). The `shell`, `write_file`, and `write_path` tools require confirmation since they can run commands / modify the filesystem.
 
 ### Parameterized tools
 
@@ -520,6 +521,23 @@ The `write_file('output.txt')` creates a tool that can only write to
 is a security feature that limits what files the LLM can modify. The created
 tool is exposed to the LLM with a filename-specific name (slug), e.g.
 `write_file_output_txt`.
+
+You can also sandbox file writes to an entire directory using `builtin.write_path('path')`:
+
+```yaml
+---
+model: anthropic/claude-sonnet-4-20250514
+tools:
+  - builtin.write_path('.')
+---
+Write project documentation into docs/overview.md.
+```
+
+With `write_path`:
+- The LLM supplies a relative `filepath` and `content` (plus optional `oldText` for search/replace).
+- Writes outside the target directory (e.g. `../` escapes or external symlinks) are blocked by default.
+- Use `.` for the current working directory (generates tool `write_path_dot`).
+- Pass `allow_symlinks=True`, `--follow-symlinks`, or config `follow_symlinks: true` to permit writing through symlinks pointing outside the directory.
 
 Use `builtin.*` to import all builtin tools, or `builtin.tool_name` for a specific one.
 
@@ -594,6 +612,7 @@ Configuration values can be set from config file, env var or command line flag, 
 | History file | `history_file: .history` | `RUNPROMPT_HISTORY_FILE` | |
 | Insecure TLS | `insecure: true` | `RUNPROMPT_INSECURE=1` | `--insecure` |
 | LLM timeout | `timeout: 120` | `RUNPROMPT_TIMEOUT=120` | `--timeout 120` |
+| Follow symlinks | `follow_symlinks: true` | `RUNPROMPT_FOLLOW_SYMLINKS=1` | `--follow-symlinks` |
 | Auto-save | `autosave: true` | `RUNPROMPT_AUTOSAVE=1` | `--autosave` |
 | Auto-save file | `autosave_file: path` | `RUNPROMPT_AUTOSAVE_FILE` | |
 

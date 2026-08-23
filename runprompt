@@ -50,6 +50,7 @@ CONFIG_KEYS = {
     "safe_yes", "verbose", "anthropic_api_key", "openai_api_key",
     "google_api_key", "openrouter_api_key", "chat", "chat_history", "history_file", "timeout",
     "insecure", "autosave", "autosave_file", "load", "show_shell",
+    "follow_symlinks", "write_path_follow_symlinks",
 }
 
 PROVIDERS = {
@@ -961,6 +962,8 @@ def parse_args(args):
                         help="Use custom Ollama endpoint (legacy)")
     parser.add_argument("--tool-path", action="append", default=[],
                         metavar="PATH", help="Add directory to tool import path")
+    parser.add_argument("--follow-symlinks", action="store_true",
+                        help="Allow write_path tool to follow symlinks outside target directory")
     parser.add_argument("--show-shell", action="store_true",
                         help="Show full shell commands and stream their output")
     parser.add_argument("--chat", action="store_true",
@@ -2000,8 +2003,8 @@ def load_tools(tool_specs, search_paths):
                         if getattr(factory, 'is_factory', False):
                             # Parse arguments and call factory
                             try:
-                                factory_args = parse_factory_args(args_str)
-                                func = factory(*factory_args)
+                                f_args, f_kwargs = parse_factory_args(args_str)
+                                func = factory(*f_args, **f_kwargs)
                                 # Use factory-provided name or generate one
                                 tool_name = getattr(func, 'tool_name', func_name)
                                 schema = function_to_tool_schema(func)
@@ -2080,14 +2083,13 @@ def load_tools(tool_specs, search_paths):
 
 
 def parse_factory_args(args_str):
-    """Parse factory arguments from a string like "'hello.txt'" or "1, 'two'"."""
-    # Use ast.literal_eval for safe parsing of literals
+    """Parse factory positional and keyword arguments from string."""
     import ast
-    # Wrap in tuple if multiple args, or just eval single arg
-    if ',' in args_str:
-        return ast.literal_eval('(' + args_str + ')')
-    else:
-        return (ast.literal_eval(args_str),)
+    parsed = ast.parse("func(%s)" % args_str, mode='eval')
+    call = parsed.body
+    args = [ast.literal_eval(arg) for arg in call.args]
+    kwargs = {kw.arg: ast.literal_eval(kw.value) for kw in call.keywords}
+    return args, kwargs
 
 
 def load_module_from_path(module_name, search_paths):
@@ -2438,9 +2440,14 @@ def process_chat_commands(user_input, tools, read_files=None,
         if stripped.startswith('/edit '):
             path = stripped[6:].strip()
             if path:
-                factory = BUILTIN_TOOLS["write_file"]
-                func = factory(path)
-                tool_name = getattr(func, 'tool_name', "write_file_" + _slugify_filename_for_tool(path))
+                if os.path.isdir(path) or path == "." or path.endswith(('/', '\\')):
+                    factory = BUILTIN_TOOLS["write_path"]
+                    func = factory(path)
+                    tool_name = getattr(func, 'tool_name', "write_path_" + _slugify_filename_for_tool(path))
+                else:
+                    factory = BUILTIN_TOOLS["write_file"]
+                    func = factory(path)
+                    tool_name = getattr(func, 'tool_name', "write_file_" + _slugify_filename_for_tool(path))
                 schema = function_to_tool_schema(func)
                 if schema:
                     schema['function']['name'] = tool_name
@@ -2450,12 +2457,16 @@ def process_chat_commands(user_input, tools, read_files=None,
         elif stripped.startswith('/drop '):
             path = stripped[6:].strip()
             if path:
-                tool_name = "write_file_" + _slugify_filename_for_tool(path)
-                if tool_name in tools:
-                    del tools[tool_name]
-                    cprint(YELLOW, "Dropped tool: %s" % tool_name)
-                else:
-                    cprint(YELLOW, "Tool not found: %s" % tool_name)
+                slug = _slugify_filename_for_tool(path)
+                dropped = False
+                for prefix in ("write_file_", "write_path_"):
+                    tool_name = prefix + slug
+                    if tool_name in tools:
+                        del tools[tool_name]
+                        cprint(YELLOW, "Dropped tool: %s" % tool_name)
+                        dropped = True
+                if not dropped:
+                    cprint(YELLOW, "Tool not found for path: %s" % path)
             continue
         elif stripped.startswith('/read '):
             path = stripped[6:].strip()
@@ -3111,10 +3122,38 @@ fetch_clean.safe = True
 
 def _slugify_filename_for_tool(path: str):
     """Return a slug suitable for tool naming from a file path."""
-    filename = os.path.basename(path).lower()
+    clean = path.strip()
+    if clean == ".":
+        return "dot"
+    filename = os.path.basename(clean.rstrip("/\\")).lower()
+    if not filename or filename == ".":
+        return "dot"
     slug = re.sub(r"[^a-z0-9]+", "_", filename)
     slug = re.sub(r"_+", "_", slug).strip("_")
-    return slug or "file"
+    return slug or "dot"
+
+
+def _perform_file_write(target_path: str, content: str, oldText: str = None):
+    """Write or replace content in target_path."""
+    if oldText is not None:
+        try:
+            with open(target_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
+            if oldText not in file_content:
+                return "Error: oldText not found in file. Please ensure exact match including whitespace."
+            new_content = file_content.replace(oldText, content, 1)
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            return "Successfully replaced text in %s" % target_path
+        except Exception as e:
+            return "Error editing file: %s" % str(e)
+    else:
+        try:
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return "Wrote %d bytes to %s" % (len(content), target_path)
+        except Exception as e:
+            return "Error writing file: %s" % str(e)
 
 
 def write_file(path: str):
@@ -3127,28 +3166,71 @@ def write_file(path: str):
 
     def writer(content: str, oldText: str = None):
         """Write content to the file, or replace oldText if provided."""
-        if oldText is not None:
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    file_content = f.read()
-                if oldText not in file_content:
-                    return "Error: oldText not found in file. Please ensure exact match including whitespace."
-                new_content = file_content.replace(oldText, content, 1)
-                with open(path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                return "Successfully replaced text in %s" % path
-            except Exception as e:
-                return "Error editing file: %s" % str(e)
-        else:
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return "Wrote %d bytes to %s" % (len(content), path)
+        return _perform_file_write(path, content, oldText)
+
     writer.__doc__ = "Write content to %s. If oldText is provided, replaces exact match of oldText with content instead of overwriting." % path
     writer.tool_name = tool_name
     return writer
 
 
 write_file.is_factory = True
+
+
+def write_path(base_path: str, allow_symlinks: bool = None):
+    """Factory that creates a file writer tool restricted to a base directory.
+
+    Usage in prompt: builtin.write_path('.') or builtin.write_path('src/')
+    """
+    if allow_symlinks is None:
+        allow_symlinks = bool(get_conf("write_path_follow_symlinks") or get_conf("follow_symlinks"))
+    base_dir = os.path.abspath(base_path)
+    tool_suffix = _slugify_filename_for_tool(base_path)
+    tool_name = "write_path_%s" % tool_suffix
+
+    def writer(filepath: str, content: str, oldText: str = None):
+        """Write or edit a file inside the allowed directory."""
+        target_path = os.path.abspath(os.path.join(base_dir, filepath))
+
+        if not allow_symlinks:
+            real_base = os.path.realpath(base_dir)
+            if os.path.exists(target_path):
+                real_target = os.path.realpath(target_path)
+            else:
+                curr = os.path.dirname(target_path)
+                parts = [os.path.basename(target_path)]
+                while curr and not os.path.exists(curr) and curr != os.path.dirname(curr):
+                    parts.append(os.path.basename(curr))
+                    curr = os.path.dirname(curr)
+                real_curr = os.path.realpath(curr) if os.path.exists(curr) else curr
+                real_target = os.path.join(real_curr, *reversed(parts))
+
+            try:
+                if os.path.commonpath([real_base, real_target]) != real_base:
+                    return "Error: Path resolves outside %s (symlink traversal denied)" % base_path
+            except ValueError:
+                return "Error: Path resolves outside %s" % base_path
+        else:
+            try:
+                if os.path.commonpath([base_dir, target_path]) != base_dir:
+                    return "Error: Path is outside %s" % base_path
+            except ValueError:
+                return "Error: Path is outside %s" % base_path
+
+        try:
+            parent = os.path.dirname(target_path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+        except Exception as e:
+            return "Error creating directory: %s" % str(e)
+
+        return _perform_file_write(target_path, content, oldText)
+
+    writer.__doc__ = "Write or edit files inside %s. Provide filepath, content, and optional oldText." % base_path
+    writer.tool_name = tool_name
+    return writer
+
+
+write_path.is_factory = True
 
 
 def datetime_now():
@@ -3219,6 +3301,7 @@ BUILTIN_TOOLS = {
     "ask_user": ask_user,
     "shell": shell,
     "write_file": write_file,
+    "write_path": write_path,
 }
 
 

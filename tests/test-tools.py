@@ -967,6 +967,250 @@ def test_show_shell_command_and_output():
         server.shutdown()
 
 
+def test_builtin_write_path_factory_schema():
+    """Test that builtin.write_path creates tool schema with filepath parameter and dot slug."""
+    responses = [
+        {"choices": [{"message": {"content": "Done"}}]}
+    ]
+    server = start_server(MOCK_PORT + 20, responses)
+    try:
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 20)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_path('.')",
+             'tests/hello.prompt'],
+            capture_output=True,
+            text=True,
+            env=env,
+            input='{"name": "World"}'
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        req = MockHandler.received_requests[0]
+        body = req['body']
+        tools = body.get('tools', [])
+        assert len(tools) == 1, "Expected exactly 1 tool"
+        func = tools[0]['function']
+        assert func['name'] == 'write_path_dot', \
+            "Expected tool name 'write_path_dot', got '%s'" % func['name']
+        params = func['parameters']
+        assert 'filepath' in params['properties'], "Expected 'filepath' parameter"
+        assert 'content' in params['properties'], "Expected 'content' parameter"
+        assert 'filepath' in params['required'], "Expected 'filepath' in required"
+        assert 'content' in params['required'], "Expected 'content' in required"
+    finally:
+        server.shutdown()
+
+
+def test_builtin_write_path_execution():
+    """Test that write_path tool creates subdirectories and writes files within sandbox."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        responses = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_wp",
+                            "type": "function",
+                            "function": {
+                                "name": "write_path_sub",
+                                "arguments": '{"filepath": "nested/dir/test.txt", "content": "Hello in sandbox!"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            {
+                "choices": [{
+                    "message": {"content": "Created file successfully."}
+                }]
+            }
+        ]
+        server = start_server(MOCK_PORT + 21, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 21)
+        env['OPENAI_API_KEY'] = 'test-key'
+        target_dir = os.path.join(temp_dir, "sub")
+        os.makedirs(target_dir, exist_ok=True)
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_path('%s')" % target_dir,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        written_file = os.path.join(target_dir, "nested", "dir", "test.txt")
+        assert os.path.exists(written_file), "File should be created in nested directory"
+        with open(written_file, 'r') as f:
+            assert f.read() == "Hello in sandbox!"
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
+def test_builtin_write_path_traversal_blocked():
+    """Test that write_path blocks directory traversal attacks."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        responses = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_wp_escape",
+                            "type": "function",
+                            "function": {
+                                "name": "write_path_sandbox",
+                                "arguments": '{"filepath": "../escape.txt", "content": "should fail"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            {
+                "choices": [{
+                    "message": {"content": "Handled failure."}
+                }]
+            }
+        ]
+        server = start_server(MOCK_PORT + 22, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 22)
+        env['OPENAI_API_KEY'] = 'test-key'
+        sandbox_dir = os.path.join(temp_dir, "sandbox")
+        os.makedirs(sandbox_dir, exist_ok=True)
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_path('%s')" % sandbox_dir,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        escaped_file = os.path.join(temp_dir, "escape.txt")
+        assert not os.path.exists(escaped_file), "Escaped file must not be created"
+        second_req = MockHandler.received_requests[1]['body']
+        tool_msg = [m for m in second_req['messages'] if m.get('role') == 'tool'][0]
+        assert "outside" in tool_msg['content'].lower() or "error" in tool_msg['content'].lower(), \
+            "Expected error message for traversal in tool result"
+    finally:
+        shutil.rmtree(temp_dir)
+        server.shutdown()
+
+
+def test_builtin_write_path_symlink_blocking_and_override():
+    """Test that external symlinks are blocked by default and allowed with --follow-symlinks."""
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        outside_dir = os.path.join(temp_dir, "outside")
+        sandbox_dir = os.path.join(temp_dir, "sandbox")
+        os.makedirs(outside_dir, exist_ok=True)
+        os.makedirs(sandbox_dir, exist_ok=True)
+        # Create a symlink inside sandbox pointing to outside
+        os.symlink(outside_dir, os.path.join(sandbox_dir, "link_out"))
+
+        # 1. Default should block writing through symlink
+        responses = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_sym_1",
+                            "type": "function",
+                            "function": {
+                                "name": "write_path_sandbox",
+                                "arguments": '{"filepath": "link_out/test.txt", "content": "symlink test"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            {
+                "choices": [{"message": {"content": "Done"}}]
+            }
+        ]
+        server = start_server(MOCK_PORT + 23, responses)
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 23)
+        env['OPENAI_API_KEY'] = 'test-key'
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', "--tools=builtin.write_path('%s')" % sandbox_dir,
+             'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0
+        assert not os.path.exists(os.path.join(outside_dir, "test.txt")), "Default must block writing via symlink"
+        server.shutdown()
+
+        # 2. With --follow-symlinks, it should succeed
+        responses2 = [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call_sym_2",
+                            "type": "function",
+                            "function": {
+                                "name": "write_path_sandbox",
+                                "arguments": '{"filepath": "link_out/test.txt", "content": "symlink allowed"}'
+                            }
+                        }]
+                    }
+                }]
+            },
+            {
+                "choices": [{"message": {"content": "Done"}}]
+            }
+        ]
+        server2 = start_server(MOCK_PORT + 24, responses2)
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 24)
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', '--model', 'openai/gpt-4o', '--follow-symlinks',
+             "--tools=builtin.write_path('%s')" % sandbox_dir, 'tests/hello.prompt'],
+            env=env,
+            interactions=[
+                (None, '{"name": "World"}'),
+                ('Run this tool?', 'y'),
+            ],
+            timeout=5
+        )
+        assert returncode == 0
+        written_via_symlink = os.path.join(outside_dir, "test.txt")
+        assert os.path.exists(written_via_symlink), "Must write when symlinks are allowed"
+        with open(written_via_symlink, 'r') as f:
+            assert f.read() == "symlink allowed"
+        server2.shutdown()
+    finally:
+        shutil.rmtree(temp_dir)
+
+
 def test_show_shell_frontmatter():
     """Test that show_shell: true in frontmatter streams output."""
     import tempfile
@@ -1047,6 +1291,10 @@ if __name__ == '__main__':
     test("builtin write_file execution", test_builtin_write_file_execution)
     test("builtin write_file edit success", test_builtin_write_file_edit_success)
     test("builtin write_file edit failure", test_builtin_write_file_edit_failure)
+    test("builtin write_path factory schema", test_builtin_write_path_factory_schema)
+    test("builtin write_path execution", test_builtin_write_path_execution)
+    test("builtin write_path traversal blocked", test_builtin_write_path_traversal_blocked)
+    test("builtin write_path symlink blocking and override", test_builtin_write_path_symlink_blocking_and_override)
     test("builtin factory without args warns", test_builtin_factory_without_args_warns)
     test("builtin wildcard skips factories", test_builtin_wildcard_skips_factories)
     test("tool_calls: null does not crash", test_tool_calls_null_no_crash)
