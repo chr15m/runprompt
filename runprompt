@@ -264,6 +264,14 @@ def load_context_file(filename):
     return data
 
 
+def print_model_info(state):
+    """Print the model and relevant configuration to stderr."""
+    model_info = state.get("model_str", "")
+    if state.get("base_url"):
+        model_info += " (base URL: %s)" % state["base_url"]
+    cprint(YELLOW, "Model: %s" % model_info)
+
+
 def setup_run_state(meta, args, prompt_path):
     """Resolve model/provider/tools/url from meta. Returns a dict.
 
@@ -412,6 +420,7 @@ def handle_session_command(line, state, args, prompt_path, pending_response=None
             state["loaded_this_turn"] = True
             state.update(run_state)
             cprint(YELLOW, "Loaded conversation context from %s" % filename)
+            print_model_info(state)
             return ("loaded", None)
         except Exception as e:
             cprint(RED, "Error loading context: %s" % e)
@@ -655,6 +664,8 @@ def main():
     except ValueError as e:
         cprint(RED, "Error: %s" % e)
         sys.exit(1)
+
+    print_model_info(state)
 
     if not load_file:
         # Read files from --read flags and prompt frontmatter
