@@ -568,6 +568,7 @@ Templates use a useful subset of [Handlebars/Mustache syntax](https://google.git
 - `{{STDIN}}` - Raw stdin content (always available)
 - `{{ARGS}}` - Command line arguments after prompt file (always available)
 - `{{INPUT}}` - STDIN if provided, otherwise ARGS (always available)
+- `{{FILES}}` - Space-delimited file paths from `--read`/`--file` flags (always available; also `$FILES` in `before:` commands)
 - `{{BEFORE}}` - Combined output from all `before:` commands
 - Individual variables from `before:` commands (e.g. `{{latest_commit}}`)
 

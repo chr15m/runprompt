@@ -596,7 +596,12 @@ def main():
 
         args_str = " ".join(extra_args)
         log("Extra args: %s" % args_str)
-        variables = {"STDIN": raw_stdin or "", "ARGS": args_str}
+        cli_files = resolve_file_patterns(args.read) if args.read else []
+        variables = {
+            "STDIN": raw_stdin or "",
+            "ARGS": args_str,
+            "FILES": " ".join(cli_files),
+        }
         # Determine INPUT: prefer STDIN if provided, otherwise use ARGS
         if raw_stdin:
             variables["INPUT"] = raw_stdin
@@ -628,6 +633,7 @@ def main():
                 if input_schema:
                     first_key = list(input_schema.keys())[0]
                     variables[first_key] = args_str
+        variables["FILES"] = " ".join(cli_files)
         
         # Execute before: shell commands if present
         before_commands = meta.get("before", {})
@@ -647,7 +653,19 @@ def main():
             raw_patterns = meta.get("files") or []
             for pattern in raw_patterns:
                 rendered_pattern = render_template(pattern, variables)
-                read_patterns.append(rendered_pattern)
+                if not rendered_pattern.strip():
+                    continue
+                if "\n" in rendered_pattern:
+                    for line in rendered_pattern.splitlines():
+                        if line.strip():
+                            read_patterns.append(line.strip())
+                elif (" " in rendered_pattern and
+                      not os.path.exists(rendered_pattern)):
+                    for part in rendered_pattern.split():
+                        if part.strip():
+                            read_patterns.append(part.strip())
+                else:
+                    read_patterns.append(rendered_pattern)
 
         if args.read:
             read_patterns.extend(args.read)
@@ -2608,6 +2626,26 @@ def log(msg):
 
 
 # === FILE READING FOR --read ===
+
+
+def resolve_file_patterns(patterns):
+    """Expand globs and resolve existing local file paths and URLs."""
+    resolved = []
+    seen = set()
+    for pattern in patterns:
+        if is_url(pattern):
+            if pattern not in seen:
+                seen.add(pattern)
+                resolved.append(pattern)
+            continue
+        matches = glob.glob(pattern, recursive=True)
+        if not matches and os.path.exists(pattern):
+            matches = [pattern]
+        for path in sorted(matches):
+            if not os.path.isdir(path) and path not in seen:
+                seen.add(path)
+                resolved.append(path)
+    return resolved
 
 
 def is_url(path):
