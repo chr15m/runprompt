@@ -3184,7 +3184,7 @@ def write_file(path: str):
         """Write content to the file, or replace oldText if provided."""
         return _perform_file_write(path, content, oldText)
 
-    writer.__doc__ = "Write content to %s. If oldText is provided, replaces exact match of oldText with content instead of overwriting." % path
+    writer.__doc__ = "Create, overwrite, or edit %s. Always prefer this tool over shell commands (e.g. echo, cat) to write or modify files. If oldText is provided, replaces exact match of oldText with content instead of overwriting." % path
     writer.tool_name = tool_name
     return writer
 
@@ -3241,7 +3241,8 @@ def write_path(base_path: str, allow_symlinks: bool = None):
 
         return _perform_file_write(target_path, content, oldText)
 
-    writer.__doc__ = "Write or edit files inside %s. Provide filepath, content, and optional oldText." % base_path
+    display_path = "the current directory" if base_path == "." else base_path
+    writer.__doc__ = "Create, overwrite, or edit files in %s. Always prefer this tool over shell commands (e.g. echo, cat) to write or modify files. Provide filepath, content, and optional oldText for search/replace." % display_path
     writer.tool_name = tool_name
     return writer
 
