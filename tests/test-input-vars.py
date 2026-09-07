@@ -66,10 +66,10 @@ def test(name, func):
 
 
 def clean_env():
-    """Return a copy of environ with RUNPROMPT_* vars removed."""
+    """Return a copy of environ with RUNPROMPT_* vars and API keys removed."""
     env = os.environ.copy()
     for key in list(env.keys()):
-        if key.startswith('RUNPROMPT_'):
+        if key.startswith('RUNPROMPT_') or key.endswith('_API_KEY') or key.endswith('_BASE_URL') or key.endswith('_API_BASE') or key == 'BASE_URL':
             del env[key]
     return env
 
@@ -77,9 +77,17 @@ def clean_env():
 def get_prompt_content(req):
     """Extract the prompt content from a request."""
     messages = req['body'].get('messages', [])
-    if messages:
-        return messages[0].get('content', '')
-    return ''
+    if not messages:
+        return ''
+    content = messages[0].get('content', '')
+    if isinstance(content, list):
+        text_parts = [
+            part.get('text', '')
+            for part in content
+            if isinstance(part, dict) and part.get('type') == 'text'
+        ]
+        return '\n'.join(text_parts)
+    return content
 
 
 def test_stdin_json_parsed():
@@ -90,7 +98,7 @@ def test_stdin_json_parsed():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % MOCK_PORT
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -111,7 +119,7 @@ def test_args_json_parsed():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 1)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt', '{"name": "Bob"}'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt', '{"name": "Bob"}'],
             capture_output=True,
             text=True,
             env=env
@@ -131,7 +139,7 @@ def test_stdin_raw_string():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 2)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/stdin-test.prompt'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/stdin-test.prompt'],
             capture_output=True,
             text=True,
             env=env,
@@ -271,7 +279,7 @@ def test_stdin_takes_precedence_for_json_parsing():
         env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 8)
         env['OPENAI_API_KEY'] = 'test-key'
         result = subprocess.run(
-            ['./runprompt', 'tests/hello.prompt', '{"name": "FromArgs"}'],
+            ['./runprompt', '--model', 'openai/gpt-4o', 'tests/hello.prompt', '{"name": "FromArgs"}'],
             capture_output=True,
             text=True,
             env=env,
@@ -350,6 +358,85 @@ def test_prompt_flag_with_stdin_data():
         server.shutdown()
 
 
+def test_files_variable_empty_by_default():
+    """Test that FILES variable is empty when no --read flag is provided."""
+    server = start_server(MOCK_PORT + 12)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 12)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            ['./runprompt', '--model', 'openai/gpt-4o', '-p', 'Files: [{{FILES}}]'],
+            capture_output=True,
+            text=True,
+            env=env
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'Files: []' in prompt, "Expected empty FILES, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
+def test_files_variable_with_read_flags():
+    """Test that FILES variable contains space-delimited paths from --read flags."""
+    server = start_server(MOCK_PORT + 13)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 13)
+        env['OPENAI_API_KEY'] = 'test-key'
+        result = subprocess.run(
+            [
+                './runprompt', '--model', 'openai/gpt-4o',
+                '--read', 'tests/self.prompt',
+                '--file', 'tests/hello.prompt',
+                '-p', 'Included files: {{FILES}}'
+            ],
+            capture_output=True,
+            text=True,
+            env=env
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'Included files: tests/self.prompt tests/hello.prompt' in prompt, \
+            "Expected resolved file paths in FILES variable, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
+def test_files_variable_in_before_env():
+    """Test that $FILES environment variable is available in before: commands."""
+    server = start_server(MOCK_PORT + 14)
+    try:
+        env = clean_env()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 14)
+        env['OPENAI_API_KEY'] = 'test-key'
+        prompt_content = (
+            "---\n"
+            "before:\n"
+            "  echoed: echo \"files env: ${FILES}\"\n"
+            "---\n"
+            "Before output: {{echoed}}"
+        )
+        result = subprocess.run(
+            [
+                './runprompt', '--model', 'openai/gpt-4o',
+                '--read', 'tests/self.prompt',
+                '--read', 'tests/hello.prompt',
+                '-p', prompt_content
+            ],
+            capture_output=True,
+            text=True,
+            env=env
+        )
+        assert result.returncode == 0, "Expected success, got: %s" % result.stderr
+        prompt = get_prompt_content(MockHandler.received_requests[0])
+        assert 'files env: tests/self.prompt tests/hello.prompt' in prompt, \
+            "Expected $FILES to be set in before: subshell, got: %s" % prompt
+    finally:
+        server.shutdown()
+
+
 if __name__ == '__main__':
     test("STDIN JSON parsed", test_stdin_json_parsed)
     test("ARGS JSON parsed", test_args_json_parsed)
@@ -363,6 +450,9 @@ if __name__ == '__main__':
     test("prompt flag string", test_prompt_flag_string)
     test("prompt flag stdin", test_prompt_flag_stdin)
     test("prompt flag with stdin data", test_prompt_flag_with_stdin_data)
+    test("FILES variable empty by default", test_files_variable_empty_by_default)
+    test("FILES variable with read flags", test_files_variable_with_read_flags)
+    test("FILES variable in before env", test_files_variable_in_before_env)
 
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))

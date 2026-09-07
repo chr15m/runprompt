@@ -291,10 +291,71 @@ def test_chat_file_update():
         server.shutdown()
         shutil.rmtree(temp_dir)
 
+def test_chat_run_command():
+    """Test that /run executes a command and adds output to context."""
+    responses = [
+        {"choices": [{"message": {"role": "assistant", "content": "Got it."}}]},
+        {"choices": [{"message": {"role": "assistant", "content": "Noted."}}]}
+    ]
+    server = start_server(MOCK_PORT + 3, responses)
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    try:
+        prompt_file = os.path.join(temp_dir, "chat.prompt")
+        with open(prompt_file, "w") as f:
+            f.write("---\nmodel: openai/gpt-4o\nchat: true\n---\nHelp me debug.")
+
+        env = os.environ.copy()
+        env['OPENAI_BASE_URL'] = 'http://127.0.0.1:%d' % (MOCK_PORT + 3)
+        env['OPENAI_API_KEY'] = 'test-key'
+
+        for key in list(env.keys()):
+            if key.startswith('RUNPROMPT_'):
+                del env[key]
+
+        returncode, stdout, stderr = run_with_pty(
+            ['./runprompt', prompt_file],
+            env=env,
+            interactions=[
+                ('Got it.', '/run echo hello-output && echo err-output >&2'),
+                ('Add the output to the chat?', 'y'),
+                ('Added output to chat context', 'what happened?'),
+                ('Noted.', ''),
+            ],
+            timeout=5
+        )
+
+        assert returncode == 0, "Expected success, got: %s" % stderr
+        assert 'hello-output' in stdout, "Expected stdout displayed"
+        assert 'err-output' in stdout, "Expected stderr displayed"
+        assert len(MockHandler.received_requests) == 2, \
+            "Expected 2 API requests, got %d.\nOutput:\n%s" % (
+                len(MockHandler.received_requests), stdout)
+
+        second_req = MockHandler.received_requests[1]['body']
+        messages = second_req['messages']
+
+        assert len(messages) == 4, "Expected 4 messages in history"
+        assert messages[2]['role'] == 'user'
+        assert '$ echo hello-output' in messages[2]['content'], \
+            "Expected command in context message"
+        assert 'hello-output' in messages[2]['content'], \
+            "Expected stdout in context message"
+        assert 'err-output' in messages[2]['content'], \
+            "Expected stderr in context message"
+        assert messages[3]['role'] == 'user'
+        assert messages[3]['content'] == 'what happened?'
+
+    finally:
+        server.shutdown()
+        shutil.rmtree(temp_dir)
+
 if __name__ == '__main__':
     test("chat loop maintains history", test_chat_loop)
     test("chat frontmatter", test_chat_frontmatter)
     test("chat file update", test_chat_file_update)
+    test("chat /run command", test_chat_run_command)
     print("")
     print("Passed: %d, Failed: %d" % (passed, failed))
     if failed > 0:
