@@ -764,8 +764,12 @@ def parse_prompt_content(content):
 
 
 def parse_prompt_file(path):
-    with open(path, "r") as f:
-        content = f.read()
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except OSError as e:
+        print("Error: cannot read prompt file '%s': %s" % (path, e.strerror or e), file=sys.stderr)
+        sys.exit(1)
     return parse_prompt_content(content)
 
 
